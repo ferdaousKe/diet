@@ -9,4 +9,5 @@ import { viteSingleFile } from "vite-plugin-singlefile"
 export default defineConfig({
   plugins: [react(), tailwindcss(), viteSingleFile()],
   resolve: { alias: { "@": path.resolve(__dirname, "./src") } },
+  base: '/diet/'
 })
