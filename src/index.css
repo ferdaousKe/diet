@@ -1,0 +1,211 @@
+@import "tailwindcss";
+@import "tw-animate-css";
+
+/* Body Ledger theme: blush ground, deep plum ink, rose primary, lavender accent.
+   Light values on :root, dark values under prefers-color-scheme and [data-theme="dark"]. */
+:root {
+  --radius: 1rem;
+  --background: #fff6f8;
+  --foreground: #3a1631;
+  --card: #ffffff;
+  --card-foreground: #3a1631;
+  --popover: #ffffff;
+  --popover-foreground: #3a1631;
+  --primary: #d63a79;
+  --primary-foreground: #ffffff;
+  --secondary: #fbe8f0;
+  --secondary-foreground: #5b2149;
+  --muted: #f7ebf0;
+  --muted-foreground: #8a5a78;
+  --accent: #efe5fb;
+  --accent-foreground: #4a2a72;
+  --destructive: #d93a3a;
+  --border: #f1d9e4;
+  --input: #ebcfdb;
+  --ring: #d63a79;
+  --plum: #8a2e6f;
+  --protein: #ef6f5a;
+  --carbs: #e39a2d;
+  --fat: #9b6fd6;
+  --fiber: #3f9b7a;
+  --good: #2f8f6a;
+  --warn: #b8730e;
+  --bad: #d93a3a;
+  --quote-a: #fde2ec;
+  --quote-b: #ece3fb;
+  --blob-a: rgba(244, 143, 177, 0.22);
+  --blob-b: rgba(179, 157, 219, 0.2);
+  --shadow-soft: 0 1px 2px rgba(90, 20, 60, 0.05), 0 10px 30px -14px rgba(140, 40, 100, 0.18);
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --background: #1b1017;
+    --foreground: #f8e8f0;
+    --card: #261621;
+    --card-foreground: #f8e8f0;
+    --popover: #2b1926;
+    --popover-foreground: #f8e8f0;
+    --primary: #ff86b4;
+    --primary-foreground: #2a0f1f;
+    --secondary: #3a2132;
+    --secondary-foreground: #f8e8f0;
+    --muted: #33202d;
+    --muted-foreground: #c69db6;
+    --accent: #33264a;
+    --accent-foreground: #e6d7ff;
+    --destructive: #ff6b6b;
+    --border: #3e2637;
+    --input: #4c2f43;
+    --ring: #ff86b4;
+    --plum: #ffb3d1;
+    --protein: #ff9479;
+    --carbs: #f5bc5c;
+    --fat: #bb9af4;
+    --fiber: #6fc9a4;
+    --good: #6fc9a4;
+    --warn: #f2b04b;
+    --bad: #ff6b6b;
+    --quote-a: #4a1f3b;
+    --quote-b: #2f2550;
+    --blob-a: rgba(255, 134, 180, 0.12);
+    --blob-b: rgba(187, 154, 244, 0.1);
+    --shadow-soft: 0 1px 2px rgba(0, 0, 0, 0.3), 0 12px 30px -16px rgba(0, 0, 0, 0.6);
+    color-scheme: dark;
+  }
+}
+:root[data-theme="dark"] {
+  --background: #1b1017;
+  --foreground: #f8e8f0;
+  --card: #261621;
+  --card-foreground: #f8e8f0;
+  --popover: #2b1926;
+  --popover-foreground: #f8e8f0;
+  --primary: #ff86b4;
+  --primary-foreground: #2a0f1f;
+  --secondary: #3a2132;
+  --secondary-foreground: #f8e8f0;
+  --muted: #33202d;
+  --muted-foreground: #c69db6;
+  --accent: #33264a;
+  --accent-foreground: #e6d7ff;
+  --destructive: #ff6b6b;
+  --border: #3e2637;
+  --input: #4c2f43;
+  --ring: #ff86b4;
+  --plum: #ffb3d1;
+  --protein: #ff9479;
+  --carbs: #f5bc5c;
+  --fat: #bb9af4;
+  --fiber: #6fc9a4;
+  --good: #6fc9a4;
+  --warn: #f2b04b;
+  --bad: #ff6b6b;
+  --quote-a: #4a1f3b;
+  --quote-b: #2f2550;
+  --blob-a: rgba(255, 134, 180, 0.12);
+  --blob-b: rgba(187, 154, 244, 0.1);
+  --shadow-soft: 0 1px 2px rgba(0, 0, 0, 0.3), 0 12px 30px -16px rgba(0, 0, 0, 0.6);
+  color-scheme: dark;
+}
+
+@theme inline {
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --color-card: var(--card);
+  --color-card-foreground: var(--card-foreground);
+  --color-popover: var(--popover);
+  --color-popover-foreground: var(--popover-foreground);
+  --color-primary: var(--primary);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-secondary: var(--secondary);
+  --color-secondary-foreground: var(--secondary-foreground);
+  --color-muted: var(--muted);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-accent: var(--accent);
+  --color-accent-foreground: var(--accent-foreground);
+  --color-destructive: var(--destructive);
+  --color-border: var(--border);
+  --color-input: var(--input);
+  --color-ring: var(--ring);
+  --color-plum: var(--plum);
+  --color-protein: var(--protein);
+  --color-carbs: var(--carbs);
+  --color-fat: var(--fat);
+  --color-fiber: var(--fiber);
+  --color-good: var(--good);
+  --color-warn: var(--warn);
+  --color-bad: var(--bad);
+  --radius-sm: calc(var(--radius) - 8px);
+  --radius-md: calc(var(--radius) - 6px);
+  --radius-lg: calc(var(--radius) - 4px);
+  --radius-xl: var(--radius);
+  --font-sans: "Nunito", ui-rounded, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  --font-display: "Fraunces", Georgia, "Times New Roman", serif;
+}
+
+@utility shadow-soft {
+  box-shadow: var(--shadow-soft);
+}
+
+@layer base {
+  * {
+    @apply border-border outline-ring/50;
+  }
+  body {
+    @apply text-foreground font-sans antialiased;
+    background:
+      radial-gradient(900px 420px at 92% -8%, var(--blob-a), transparent 65%),
+      radial-gradient(760px 380px at -8% 4%, var(--blob-b), transparent 60%),
+      var(--background);
+    background-attachment: fixed;
+    font-size: 15px;
+  }
+  h1, h2, h3 {
+    text-wrap: balance;
+  }
+  .tnum {
+    font-variant-numeric: tabular-nums;
+  }
+}
+
+.quote-card {
+  background: linear-gradient(120deg, var(--quote-a), var(--quote-b));
+}
+.quote-card::before,
+.quote-card::after {
+  content: "";
+  position: absolute;
+  border-radius: 9999px;
+  pointer-events: none;
+}
+.quote-card::before {
+  width: 220px;
+  height: 220px;
+  right: -60px;
+  top: -90px;
+  background: var(--blob-a);
+}
+.quote-card::after {
+  width: 160px;
+  height: 160px;
+  left: 30%;
+  bottom: -110px;
+  background: var(--blob-b);
+}
+
+/* Nutrition Facts label, inked in plum */
+.nf {
+  border: 2px solid var(--foreground);
+  border-radius: 14px;
+  background: var(--card);
+  padding: 8px 12px 12px;
+}
+.nf .r10 { border-top: 10px solid var(--foreground); }
+.nf .r5 { border-top: 5px solid var(--foreground); }
+.nf .row { display: flex; justify-content: space-between; gap: 8px; border-top: 1px solid var(--foreground); padding: 3px 0; font-size: 14px; font-variant-numeric: tabular-nums; }
+.nf .row.nob { border-top: 0; }
+.nf .row.ind { padding-left: 16px; }
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after { transition: none !important; animation: none !important; }
+}
