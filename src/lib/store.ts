@@ -1,7 +1,7 @@
 /* Data store.
  * Inside claude.ai the app uses the artifact `db` capability: each signed-in person gets a private
  * subtree at data/users/<id>/profile (+ /days/<date>, /foods/<id>).
- * Anywhere else (npm run dev, your own hosting) it falls back to this browser's localStorage.
+ * Elsewhere it uses Firebase when configured, then falls back to this browser's localStorage.
  */
 import { useSyncExternalStore } from "react"
 import type { Day, Food, Profile } from "./types"
@@ -9,6 +9,9 @@ import { DEFAULT_PROFILE } from "./data"
 import { blankDay, isEmptyDay } from "./calc"
 import { clone, num, round1, stable } from "./utils"
 import { toast } from "sonner"
+import { getApps, initializeApp } from "firebase/app"
+import { getAuth, GoogleAuthProvider, onAuthStateChanged, signInWithPopup, signOut, type User } from "firebase/auth"
+import { collection, deleteDoc, doc, getFirestore, onSnapshot, setDoc } from "firebase/firestore"
 
 export type Conn = "connecting" | "cloud" | "device" | "error"
 export interface Me { id: string | null; name: string; avatarUrl: string }
@@ -20,12 +23,13 @@ export interface LedgerState {
   conn: Conn
   sync: "idle" | "saving" | "error"
   me: Me | null
+  authProvider: "google" | null
   loaded: boolean
 }
 
 let S: LedgerState = {
   profile: { ...DEFAULT_PROFILE }, profileSaved: false, days: {}, foods: {},
-  conn: "connecting", sync: "idle", me: null, loaded: false,
+  conn: "connecting", sync: "idle", me: null, authProvider: null, loaded: false,
 }
 const subs = new Set<() => void>()
 function set(patch: Partial<LedgerState>) {
@@ -63,6 +67,57 @@ function normDay(d: Record<string, unknown>, id: string): Day {
 type Ref = any
 let base: Ref = null
 let syncError = false
+const firebaseConfig = {
+  apiKey: import.meta.env.VITE_FIREBASE_API_KEY,
+  authDomain: import.meta.env.VITE_FIREBASE_AUTH_DOMAIN,
+  projectId: import.meta.env.VITE_FIREBASE_PROJECT_ID,
+  appId: import.meta.env.VITE_FIREBASE_APP_ID,
+}
+export const googleAuthEnabled = Object.values(firebaseConfig).every(Boolean)
+const firebaseApp = googleAuthEnabled
+  ? getApps()[0] || initializeApp(firebaseConfig)
+  : null
+const firebaseAuth = firebaseApp ? getAuth(firebaseApp) : null
+const firebaseDb = firebaseApp ? getFirestore(firebaseApp) : null
+const cloudUnsubscribers: (() => void)[] = []
+let activeUid: string | null = null
+
+function firebaseDoc(reference: ReturnType<typeof doc>): Ref {
+  return {
+    path: reference.path,
+    set: (data: unknown) => setDoc(reference, data as Record<string, unknown>),
+    delete: () => deleteDoc(reference),
+    collection: (name: string) => firebaseCollection(collection(reference, name)),
+    onSnapshot: (next: (snap: Ref) => void, error: (e: { code?: string }) => void) =>
+      onSnapshot(reference, (snap) => next({ exists: snap.exists(), data: () => snap.data() }), error),
+  }
+}
+function firebaseCollection(reference: ReturnType<typeof collection>): Ref {
+  return {
+    path: reference.path,
+    doc: (id: string) => firebaseDoc(doc(reference, id)),
+    onSnapshot: (next: (snap: Ref) => void, error: (e: { code?: string }) => void) => onSnapshot(reference, next, error),
+  }
+}
+
+export async function signInWithGoogle() {
+  if (!firebaseAuth) return
+  try {
+    await signInWithPopup(firebaseAuth, new GoogleAuthProvider())
+  } catch (error) {
+    if ((error as { code?: string })?.code !== "auth/popup-closed-by-user") {
+      toast.error("Google sign-in failed. Check your Firebase configuration and try again.")
+    }
+  }
+}
+export async function signOutGoogle() {
+  if (!firebaseAuth) return
+  try {
+    await signOut(firebaseAuth)
+  } catch {
+    toast.error("Could not sign out. Please try again.")
+  }
+}
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms))
 const saver = {
   pending: new Map<string, { ref: Ref; data: unknown }>(),
@@ -191,44 +246,46 @@ function onSubErr(e: { code?: string }) {
 }
 
 let started = false
-export async function connect() {
-  if (started) return
-  started = true
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const c = (window as any).claude
-  const use = (n: string) =>
-    c && typeof c.use === "function" ? Promise.resolve(c.use(n)).catch(() => null) : Promise.resolve(null)
-  const [db, user] = await Promise.all([use("db"), use("user")])
-  let me: Me | null = null
-  if (user) {
-    try { me = await user.me() } catch { me = null }
-  }
-  if (!db || !me?.id) {
-    loadDevice()
-    set({ conn: "device", me, loaded: true })
-    return
-  }
-  try {
-    base = db.doc(`data/users/${me.id}/profile`)
-  } catch {
-    loadDevice()
-    set({ conn: "device", me, loaded: true })
-    return
-  }
-  set({ conn: "cloud", me })
-  const daysPath = base.path + "/days"
-  const foodsPath = base.path + "/foods"
+function clearSessionData(conn: Conn, me: Me | null, authProvider: "google" | null) {
+  loadedFlags.profile = false
+  loadedFlags.days = false
+  loadedFlags.foods = false
+  set({
+    profile: { ...DEFAULT_PROFILE }, profileSaved: false, days: {}, foods: {},
+    conn, sync: "idle", me, authProvider, loaded: false,
+  })
+}
 
-  base.onSnapshot((snap: Ref) => {
+function useDeviceSession(me: Me | null = null) {
+  cloudUnsubscribers.splice(0).forEach((unsubscribe) => unsubscribe())
+  activeUid = null
+  base = null
+  loadDevice()
+  set({ conn: "device", me, authProvider: null, loaded: true })
+}
+
+function attachCloud(userBase: Ref, me: Me, authProvider: "google" | null) {
+  if (activeUid === me.id) return
+  cloudUnsubscribers.splice(0).forEach((unsubscribe) => unsubscribe())
+  activeUid = me.id
+  base = userBase
+  clearSessionData("cloud", me, authProvider)
+  const currentBase = base
+  const daysPath = currentBase.path + "/days"
+  const foodsPath = currentBase.path + "/foods"
+
+  cloudUnsubscribers.push(currentBase.onSnapshot((snap: Ref) => {
+    if (activeUid !== me.id) return
     loadedFlags.profile = true
-    if (!saver.busy(base.path) && snap.exists) {
+    if (!saver.busy(currentBase.path) && snap.exists) {
       const next = normProfile(snap.data() || {})
       if (!S.profileSaved || stable(next) !== stable(S.profile)) set({ profile: next, profileSaved: true })
     }
     refreshLoaded()
-  }, onSubErr)
+  }, onSubErr))
 
-  base.collection("days").onSnapshot((snap: Ref) => {
+  cloudUnsubscribers.push(currentBase.collection("days").onSnapshot((snap: Ref) => {
+    if (activeUid !== me.id) return
     let days = S.days
     let changed = false
     for (const ch of snap.docChanges()) {
@@ -248,9 +305,10 @@ export async function connect() {
     loadedFlags.days = true
     if (changed) set({ days })
     refreshLoaded()
-  }, onSubErr)
+  }, onSubErr))
 
-  base.collection("foods").onSnapshot((snap: Ref) => {
+  cloudUnsubscribers.push(currentBase.collection("foods").onSnapshot((snap: Ref) => {
+    if (activeUid !== me.id) return
     let foods = S.foods
     let changed = false
     for (const ch of snap.docChanges()) {
@@ -270,5 +328,46 @@ export async function connect() {
     loadedFlags.foods = true
     if (changed) set({ foods })
     refreshLoaded()
-  }, onSubErr)
+  }, onSubErr))
+}
+
+export async function connect() {
+  if (started) return
+  started = true
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const c = (window as any).claude
+  const use = (n: string) =>
+    c && typeof c.use === "function" ? Promise.resolve(c.use(n)).catch(() => null) : Promise.resolve(null)
+  const [db, user] = await Promise.all([use("db"), use("user")])
+  let me: Me | null = null
+  if (user) {
+    try { me = await user.me() } catch { me = null }
+  }
+  if (db && me?.id) {
+    try {
+      attachCloud(db.doc(`data/users/${me.id}/profile`), me, null)
+    } catch {
+      useDeviceSession(me)
+    }
+    return
+  }
+  if (firebaseAuth && firebaseDb) {
+    onAuthStateChanged(firebaseAuth, (firebaseUser: User | null) => {
+      if (!firebaseUser) {
+        if (S.conn !== "device" || !S.loaded || activeUid) useDeviceSession()
+        return
+      }
+      const googleMe = {
+        id: firebaseUser.uid,
+        name: firebaseUser.displayName || firebaseUser.email || "Google user",
+        avatarUrl: firebaseUser.photoURL || "",
+      }
+      attachCloud(firebaseDoc(doc(firebaseDb, "users", firebaseUser.uid)), googleMe, "google")
+    }, () => {
+      toast.error("Could not verify your Google session.")
+      useDeviceSession()
+    })
+    return
+  }
+  useDeviceSession(me)
 }

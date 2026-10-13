@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from "react"
-import { Activity, Apple, Flower2, Gauge, Scale, Sun } from "lucide-react"
+import { Activity, Apple, Flower2, Gauge, LogOut, Scale, Sun } from "lucide-react"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
+import { Button } from "@/components/ui/button"
 import { Toaster } from "@/components/ui/sonner"
 import { TodayView } from "@/components/views/TodayView"
 import { FoodView } from "@/components/views/FoodView"
@@ -10,7 +11,7 @@ import { MetabolismView } from "@/components/views/MetabolismView"
 import type { ViewProps } from "@/components/shared"
 import { metrics } from "@/lib/calc"
 import { today } from "@/lib/dates"
-import { connect, useLedger } from "@/lib/store"
+import { connect, googleAuthEnabled, signInWithGoogle, signOutGoogle, useLedger } from "@/lib/store"
 import type { Meal } from "@/lib/types"
 import { cn } from "@/lib/utils"
 
@@ -69,10 +70,21 @@ export default function App() {
             </span>
             {s.me?.id && (
               <span className="flex min-w-0 items-center gap-2 font-bold">
-                <img src={s.me.avatarUrl} alt="" className="size-8 shrink-0 rounded-full ring-2 ring-primary/30" />
+                {s.me.avatarUrl && <img src={s.me.avatarUrl} alt="" className="size-8 shrink-0 rounded-full ring-2 ring-primary/30" />}
                 <span className="hidden max-w-[16ch] truncate sm:inline">{s.me.name || "You"}</span>
               </span>
             )}
+            {s.authProvider === "google" ? (
+              <Button variant="ghost" size="icon-sm" onClick={() => void signOutGoogle()} aria-label="Sign out" title="Sign out">
+                <LogOut />
+              </Button>
+            ) : googleAuthEnabled && !s.me?.id ? (
+              <Button variant="outline" size="sm" onClick={() => void signInWithGoogle()}>
+                <span aria-hidden="true" className="font-black text-blue-600">G</span>
+                <span className="hidden sm:inline">Continue with Google</span>
+                <span className="sm:hidden">Sign in</span>
+              </Button>
+            ) : null}
           </div>
         </div>
         <div className="mx-auto max-w-6xl overflow-x-auto px-4 py-2.5 [scrollbar-width:none]">
