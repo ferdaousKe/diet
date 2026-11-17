@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from "react"
-import { Activity, Apple, Flower2, Gauge, LogOut, Scale, Sun } from "lucide-react"
+import { Activity, Apple, CalendarHeart, Flower2, Gauge, LogOut, Scale, Sun } from "lucide-react"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { Button } from "@/components/ui/button"
 import { Toaster } from "@/components/ui/sonner"
@@ -8,6 +8,7 @@ import { FoodView } from "@/components/views/FoodView"
 import { ExerciseView } from "@/components/views/ExerciseView"
 import { WeightView } from "@/components/views/WeightView"
 import { MetabolismView } from "@/components/views/MetabolismView"
+import { CycleView } from "@/components/views/CycleView"
 import type { ViewProps } from "@/components/shared"
 import { metrics } from "@/lib/calc"
 import { today } from "@/lib/dates"
@@ -20,6 +21,7 @@ const TABS = [
   ["food", "Food", Apple],
   ["exercise", "Exercise", Activity],
   ["weight", "Weight", Scale],
+  ["cycle", "Cycle", CalendarHeart],
   ["metab", "Metabolism", Gauge],
 ] as const
 
@@ -47,6 +49,32 @@ export default function App() {
   const setDate = (d: string) => setDateState(d > today() ? today() : d)
   const M = useMemo(() => metrics(s.profile, s.days, { profileSaved: s.profileSaved }), [s.profile, s.days, s.profileSaved])
   const props: ViewProps = { s, M, date, setDate, go, meal, setMeal }
+
+  if (!googleAuthEnabled || s.authProvider !== "google" || !s.me?.id) {
+    return (
+      <div className="grid min-h-screen place-items-center px-5 py-10">
+        <section className="w-full max-w-md space-y-5 rounded-xl border bg-card p-7 shadow-soft sm:p-9">
+          <div className="space-y-2">
+            <p className="text-sm font-bold uppercase text-primary">Body Ledger</p>
+            <h1 className="font-display text-3xl font-semibold">Sign in to continue</h1>
+            <p className="text-sm text-muted-foreground">
+              {googleAuthEnabled
+                ? "Your health journal is private to your Google account."
+                : "Google sign-in must be configured before this journal can be used."}
+            </p>
+          </div>
+          <Button className="w-full" onClick={() => void signInWithGoogle()} disabled={!googleAuthEnabled}>
+            <span aria-hidden="true" className="font-black">G</span>
+            Continue with Google
+          </Button>
+          {!googleAuthEnabled && (
+            <p className="text-xs text-muted-foreground">Add the Firebase web app settings, then rebuild and deploy.</p>
+          )}
+        </section>
+        <Toaster />
+      </div>
+    )
+  }
 
   const status =
     s.conn === "device" ? { tone: "warn", text: "This browser" }
@@ -100,6 +128,7 @@ export default function App() {
         <TabsContent value="food"><FoodView {...props} /></TabsContent>
         <TabsContent value="exercise"><ExerciseView {...props} /></TabsContent>
         <TabsContent value="weight"><WeightView {...props} /></TabsContent>
+        <TabsContent value="cycle"><CycleView {...props} /></TabsContent>
         <TabsContent value="metab"><MetabolismView {...props} /></TabsContent>
       </main>
       <Toaster />

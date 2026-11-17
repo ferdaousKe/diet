@@ -7,9 +7,11 @@ import { Button } from "@/components/ui/button"
 import { Card, CardAction, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Label } from "@/components/ui/label"
 import { Separator } from "@/components/ui/separator"
-import { Banners, CalorieRing, DateNav, MacroBar, QuoteCard, UnitInput, type ViewProps } from "@/components/shared"
-import { blankDay, dayTotals, exKcal, macroTargets, totalsOf, weightPoints } from "@/lib/calc"
-import { MEALS } from "@/lib/data"
+import { Banners, CalorieRing, DateNav, DayTypePicker, MacroBar, QuoteCard, UnitInput, type ViewProps } from "@/components/shared"
+import { blankDay, dayTarget, dayTotals, exKcal, totalsOf, weightPoints } from "@/lib/calc"
+import { calorieCheck } from "@/lib/adjust"
+import { cycleContext } from "@/lib/cycle"
+import { MEALS, WORKOUT_MEALS, dayTypeName } from "@/lib/data"
 import { fmtDate, today } from "@/lib/dates"
 import { setWeight, updateDay } from "@/lib/store"
 import { clamp, cn, fmt, parseNum } from "@/lib/utils"
@@ -18,10 +20,14 @@ export function TodayView({ s, M, date, setDate, go, setMeal }: ViewProps) {
   const day = s.days[date] ?? blankDay(date)
   const t = dayTotals(day)
   const exk = exKcal(day)
-  const credited = Math.round(exk * M.credit)
-  const budget = M.target + credited
+  // Targets for this date: from its day type (rest / gym / running), or the formula + workout credit.
+  const target = dayTarget(s.profile, M, s.days[date])
+  const budget = target.k
   const left = Math.round(budget - t.k)
-  const mt = macroTargets(budget, M)
+  const mt = { p: target.p, c: target.c, f: target.f, fb: target.fb }
+  const training = target.type !== "rest"
+  const meals = MEALS.filter(([k]) => training || !WORKOUT_MEALS.includes(k) || day.food.some((e) => e.meal === k))
+  const check = date === today() && s.loaded ? calorieCheck(s.days, s.profile, M, cycleContext(s.cycles, s.profile)) : null
   const glassesTarget = clamp(Math.round(M.water / 250), 4, 16)
   const water = day.water || 0
   const pts = weightPoints(s.days)
@@ -50,6 +56,13 @@ export function TodayView({ s, M, date, setDate, go, setMeal }: ViewProps) {
       {date === today() && <QuoteCard seed={date} name={firstName} mine={s.profile.myQuotes} />}
       <WorkoutEditor target={editEx ? { date, entry: editEx } : null} weight={M.w} onClose={() => setEditEx(null)} />
       <DateNav date={date} setDate={setDate} />
+      <DayTypePicker date={date} s={s} />
+      {check?.status === "suggest" && (
+        <div className="flex flex-wrap items-center justify-between gap-3 rounded-2xl bg-accent px-4 py-3 text-sm text-accent-foreground">
+          <span>Your 3-week calorie check-in has a suggestion. Nothing changes unless you confirm it.</span>
+          <Button size="sm" variant="outline" onClick={() => go("weight")}>Review</Button>
+        </div>
+      )}
 
       <div className="grid items-start gap-5 lg:grid-cols-[minmax(0,1.5fr)_minmax(0,1fr)]">
         <Card>
@@ -58,11 +71,9 @@ export function TodayView({ s, M, date, setDate, go, setMeal }: ViewProps) {
               <CalorieRing eaten={t.k} budget={budget} />
               <div className="grid min-w-0 flex-1 basis-[240px] gap-3">
                 <div className="flex flex-wrap items-center gap-x-3 gap-y-2 tnum">
-                  <EqItem v={M.target} l="Target" />
+                  <EqItem v={budget} l="Target" />
                   <Op>−</Op>
                   <EqItem v={t.k} l="Food" />
-                  <Op>+</Op>
-                  <EqItem v={credited} l={exk && M.credit < 1 ? `Exercise ${Math.round(M.credit * 100)}%` : "Exercise"} />
                   <Op>=</Op>
                   <EqItem v={left} l="Left" strong />
                 </div>
@@ -79,7 +90,7 @@ export function TodayView({ s, M, date, setDate, go, setMeal }: ViewProps) {
             </div>
             <div className="grid gap-1">
               <div className="flex flex-wrap items-baseline justify-between gap-2">
-                <b className="font-display text-lg font-semibold">Your macros for {date === today() ? "today" : "this day"}</b>
+                <b className="font-display text-lg font-semibold">Your macros for {date === today() ? "today" : "this day"}{target.byType ? ` · ${dayTypeName(target.type)}` : ""}</b>
                 {pace != null && <span className="flex items-center gap-1.5 text-xs text-muted-foreground"><i className="h-3 w-[3px] rounded-full bg-foreground/70" />where you'd be by {nowLabel}</span>}
               </div>
               <p className="text-xs text-muted-foreground tnum">Needs: {fmt(mt.p)} g protein · {fmt(mt.c)} g carbs · {fmt(mt.f)} g fat · {fmt(mt.fb)} g fiber</p>
@@ -90,7 +101,7 @@ export function TodayView({ s, M, date, setDate, go, setMeal }: ViewProps) {
               <MacroBar color="fat" label="Fat" eaten={t.f} target={mt.f} pace={pace} />
               <MacroBar color="fiber" label="Fiber" eaten={t.fb} target={mt.fb} pace={pace} moreIsFine />
             </div>
-            <RemainingPlan day={day} left={{ k: budget - t.k, p: mt.p - t.p, c: mt.c - t.c, f: mt.f - t.f }} isToday={date === today()} />
+            <RemainingPlan day={day} meals={meals} left={{ k: budget - t.k, p: mt.p - t.p, c: mt.c - t.c, f: mt.f - t.f }} isToday={date === today()} />
           </CardContent>
         </Card>
         <NutritionLabel date={date} items={day.food.length} t={t} mt={mt} budget={budget} exk={exk} water={water} />
@@ -103,7 +114,7 @@ export function TodayView({ s, M, date, setDate, go, setMeal }: ViewProps) {
             <CardAction><Button variant="secondary" size="sm" onClick={() => go("food")}>Food diary</Button></CardAction>
           </CardHeader>
           <CardContent className="grid">
-            {MEALS.map(([k, l], i) => {
+            {meals.map(([k, l], i) => {
               const es = day.food.filter((e) => e.meal === k)
               const kc = totalsOf(es).k
               return (
@@ -186,12 +197,12 @@ export function TodayView({ s, M, date, setDate, go, setMeal }: ViewProps) {
 }
 
 /** Splits what is left across the meals still ahead (empty meals whose time hasn't passed). */
-const MEAL_SHARE: Record<string, number> = { breakfast: 0.25, lunch: 0.35, dinner: 0.3, snacks: 0.1 }
-const MEAL_ENDS: Record<string, number> = { breakfast: 11, lunch: 15.5, snacks: 21, dinner: 24 }
-function RemainingPlan({ day, left, isToday }: { day: Day; left: { k: number; p: number; c: number; f: number }; isToday: boolean }) {
+const MEAL_SHARE: Record<string, number> = { breakfast: 0.25, preworkout: 0.1, lunch: 0.35, postworkout: 0.12, dinner: 0.3, snacks: 0.1 }
+const MEAL_ENDS: Record<string, number> = { breakfast: 11, preworkout: 21, lunch: 15.5, postworkout: 23, snacks: 21, dinner: 24 }
+function RemainingPlan({ day, meals, left, isToday }: { day: Day; meals: typeof MEALS; left: { k: number; p: number; c: number; f: number }; isToday: boolean }) {
   const now = new Date()
   const h = now.getHours() + now.getMinutes() / 60
-  const ahead = MEALS.filter(([k]) => !day.food.some((e) => e.meal === k) && (!isToday || h < MEAL_ENDS[k]))
+  const ahead = meals.filter(([k]) => !day.food.some((e) => e.meal === k) && (!isToday || h < MEAL_ENDS[k]))
   const L = { k: Math.max(0, left.k), p: Math.max(0, left.p), c: Math.max(0, left.c), f: Math.max(0, left.f) }
   if (L.k < 20) {
     return <p className="rounded-2xl bg-secondary/70 px-4 py-3 text-sm">Your needs for {isToday ? "today" : "this day"} are covered. Well done!</p>

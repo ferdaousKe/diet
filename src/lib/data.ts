@@ -1,4 +1,4 @@
-import type { Food, Meal, Profile } from "./types"
+import type { DayType, Food, Meal, Nutr, Profile } from "./types"
 import { slug } from "./utils"
 
 // name | category | kcal | protein | carbs | fat | fiber (per 100 g) | serving g | serving label
@@ -147,7 +147,11 @@ export const CATS: [string, string][] = [
   ["drink", "Drinks"], ["meal", "Dishes"],
 ]
 
-export const MEALS: [Meal, string][] = [["breakfast", "Breakfast"], ["lunch", "Lunch"], ["dinner", "Dinner"], ["snacks", "Snacks"]]
+export const MEALS: [Meal, string][] = [
+  ["breakfast", "Breakfast"], ["preworkout", "Pre-workout"], ["lunch", "Lunch"], ["postworkout", "Post-workout"], ["dinner", "Dinner"], ["snacks", "Snacks"],
+]
+/** Meals only listed on training days (they still count whenever they hold food). */
+export const WORKOUT_MEALS: Meal[] = ["preworkout", "postworkout"]
 export const mealName = (k: string) => (MEALS.find((m) => m[0] === k) || MEALS[0])[1]
 
 export const ACTIVITY: [number, string, string][] = [
@@ -181,11 +185,35 @@ export const EXERCISES: [string, [string, string, number][]][] = [
 export const EX_INDEX: Record<string, { name: string; met: number }> = {}
 EXERCISES.forEach(([, list]) => list.forEach(([id, name, met]) => { EX_INDEX[id] = { name, met } }))
 
+export const DAY_TYPES: [DayType, string, string][] = [
+  ["rest", "Rest day", "No training"],
+  ["gym", "Gym day", "Strength training"],
+  ["run", "Running day", "Run or cardio session"],
+]
+export const dayTypeName = (t: DayType) => (DAY_TYPES.find((d) => d[0] === t) || DAY_TYPES[0])[1]
+
+export const DEFAULT_DAY_TARGETS: Record<DayType, Nutr> = {
+  rest: { k: 1600, p: 125, c: 155, f: 53, fb: 25 },
+  gym: { k: 1800, p: 130, c: 205, f: 51, fb: 25 },
+  run: { k: 1900, p: 130, c: 230, f: 51, fb: 25 },
+}
+
 export const DEFAULT_PROFILE: Profile = {
-  sex: "female", dob: "1997-05-14", height: 165, weight: 70, goalWeight: 62, activity: 1.375,
-  bodyFat: null, neck: null, waist: null, hip: null, goal: "lose", rate: 0.5, bmrFormula: "mifflin",
-  proteinPerKg: 1.8, fatPct: 30, exCredit: 0.5, targetMode: "formula", customKcal: null,
+  v: 2, sex: "female", dob: "", age: 25, height: 163, weight: 70.5, goalWeight: 64,
+  refWeight: 70.5, refDate: "2026-11-15", goalDate: "2027-02-28", activity: 1.375,
+  bodyFat: null, neck: null, waist: null, hip: null, goal: "lose", rate: 0.43, bmrFormula: "mifflin",
+  proteinPerKg: 1.8, fatPct: 30, exCredit: 0.5, targetMode: "daytype", customKcal: null,
+  dayTargets: DEFAULT_DAY_TARGETS, defaultDayType: "rest",
   waterGoal: null, exGoal: 150, myQuotes: [],
+  cycleLength: null, periodLength: null, showPhases: false, adjustments: [], adjSnoozeUntil: null,
+}
+
+/** One-time update applied to profiles saved before version 2 (November 2026 plan).
+ *  Weigh-ins, food logs and other settings are left as they are. */
+export const PROFILE_V2_UPDATE: Partial<Profile> = {
+  v: 2, sex: "female", age: 25, height: 163, weight: 70.5, refWeight: 70.5, refDate: "2026-11-15",
+  goalWeight: 64, goalDate: "2027-02-28", goal: "lose", rate: 0.43, targetMode: "daytype",
+  dayTargets: DEFAULT_DAY_TARGETS, defaultDayType: "rest",
 }
 
 /** Original motivational lines. One is picked per day; "Another one" cycles. */

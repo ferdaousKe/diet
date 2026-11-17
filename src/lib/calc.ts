@@ -1,9 +1,10 @@
-import type { Day, FoodEntry, Nutr, Profile } from "./types"
+import type { Day, DayType, FoodEntry, Nutr, Profile } from "./types"
+import { DEFAULT_DAY_TARGETS } from "./data"
 import { addDays, ageFrom, daysBetween, today } from "./dates"
 import { clamp, mean, num, slope, sum } from "./utils"
 
 export const blankDay = (date: string): Day => ({ date, food: [], ex: [], water: 0, weight: null, waist: null })
-export const isEmptyDay = (d: Day) => !d.food.length && !d.ex.length && !d.water && d.weight == null && d.waist == null
+export const isEmptyDay = (d: Day) => !d.food.length && !d.ex.length && !d.water && d.weight == null && d.waist == null && !d.dayType
 
 export function entryVals(e: FoodEntry): Nutr {
   if (e.per) {
@@ -25,9 +26,10 @@ export const dayTotals = (d: Day) => totalsOf(d.food)
 export const exKcal = (d: Day) => sum(d.ex.map((e) => (num(e.kcal) ? e.kcal : 0)))
 export const exMin = (d: Day) => sum(d.ex.map((e) => (num(e.min) ? e.min : 0)))
 
-export interface WeightPoint { date: string; w: number; t: number; waist: number | null }
+/** w: recorded weight (never altered) · t: smoothed trend · a7: mean of the weigh-ins of the last 7 days. */
+export interface WeightPoint { date: string; w: number; t: number; a7: number; waist: number | null }
 
-/** Weigh-ins with an exponentially smoothed trend (10% per day, gap-aware). */
+/** Weigh-ins with an exponentially smoothed trend (10% per day, gap-aware) and a 7-day average. */
 export function weightPoints(days: Record<string, Day>): WeightPoint[] {
   const ds = Object.values(days).filter((d) => num(d.weight)).sort((a, b) => (a.date < b.date ? -1 : 1))
   let t: number | null = null
@@ -40,8 +42,68 @@ export function weightPoints(days: Record<string, Day>): WeightPoint[] {
       t = t + (1 - Math.pow(0.9, gap)) * (w - t)
     }
     prev = d.date
-    return { date: d.date, w, t, waist: d.waist }
+    return { date: d.date, w, t, a7: w, waist: d.waist }
+  }).map((p, i, all) => {
+    const from = addDays(p.date, -6)
+    let n = 0
+    let tot = 0
+    for (let j = i; j >= 0 && all[j].date >= from; j--) { tot += all[j].w; n++ }
+    return { ...p, a7: tot / n }
   })
+}
+
+/** Weekly change of the smoothed trend (kg/week, negative = losing) over the last `span` days.
+ *  Uses the trend line, not single readings, so one heavy or light morning barely moves it. */
+export function trendRate(points: WeightPoint[], span = 21, end = today()): number | null {
+  const start = addDays(end, -span + 1)
+  const pts = points.filter((p) => p.date >= start && p.date <= end)
+  if (pts.length < 3) return null
+  const first = pts[0].date
+  if (daysBetween(first, pts[pts.length - 1].date) < Math.min(10, span - 1)) return null
+  return slope(pts.map((p) => [daysBetween(first, p.date), p.t] as [number, number])) * 7
+}
+
+/* ---------- day types and daily targets ---------- */
+const RUN_ACTS = /^(run|walk-brisk|hike|bike|spin|ellip|row|stairs|rope|swim|dance)/
+const GYM_ACTS = /^(weights|hiit|pilates|boxing|martial|climb)/
+/** The day's type: chosen explicitly, else guessed from logged workouts, else the profile default. */
+export function dayTypeOf(day: Day | undefined, p: Profile): { type: DayType; source: "chosen" | "workout" | "default" } {
+  if (day?.dayType) return { type: day.dayType, source: "chosen" }
+  const acts = (day?.ex || []).filter((e) => (e.min || 0) >= 15).map((e) => e.act || "")
+  if (acts.some((a) => a.startsWith("run"))) return { type: "run", source: "workout" }
+  if (acts.some((a) => GYM_ACTS.test(a))) return { type: "gym", source: "workout" }
+  if (acts.some((a) => RUN_ACTS.test(a))) return { type: "run", source: "workout" }
+  return { type: p.defaultDayType || "rest", source: "default" }
+}
+export const targetsOf = (p: Profile, t: DayType): Nutr => ({ ...DEFAULT_DAY_TARGETS[t], ...(p.dayTargets?.[t] || {}) })
+
+export interface DayTarget extends Nutr { type: DayType; typeSource: "chosen" | "workout" | "default"; byType: boolean; credit: number; base: number }
+/** Calorie and macro targets for one day. With day-type targets, workouts are already included in the
+ *  gym/running numbers, so nothing is added back. Otherwise the existing formula + workout credit applies. */
+export function dayTarget(p: Profile, M: Metrics, day: Day | undefined): DayTarget {
+  const dt = dayTypeOf(day, p)
+  if (M.mode === "daytype") {
+    const t = targetsOf(p, dt.type)
+    return { ...t, type: dt.type, typeSource: dt.source, byType: true, credit: 0, base: t.k }
+  }
+  const credit = day ? Math.round(exKcal(day) * M.credit) : 0
+  const k = M.target + credit
+  const mt = macroTargets(k, M)
+  return { k, p: mt.p, c: mt.c, f: mt.f, fb: mt.fb, type: dt.type, typeSource: dt.source, byType: false, credit, base: M.target }
+}
+
+/* ---------- goal plan ---------- */
+export interface Plan { start: string; startW: number; goalW: number; goalDate: string | null; rate: number }
+export function planOf(p: Profile): Plan | null {
+  if (!num(p.refWeight) || !p.refDate || !num(p.goalWeight) || !num(p.rate) || p.rate <= 0 || p.goal === "maintain") return null
+  return { start: p.refDate, startW: p.refWeight, goalW: p.goalWeight, goalDate: p.goalDate, rate: p.rate }
+}
+/** Weight the plan expects on a date (straight line at the planned rate, stopping at the goal). */
+export function planWeight(plan: Plan, date: string) {
+  const weeks = Math.max(0, daysBetween(plan.start, date)) / 7
+  const down = plan.goalW < plan.startW
+  const w = plan.startW + (down ? -1 : 1) * plan.rate * weeks
+  return down ? Math.max(plan.goalW, w) : Math.min(plan.goalW, w)
 }
 
 export interface Adaptive {
@@ -79,7 +141,7 @@ export function metrics(p: Profile, days: Record<string, Day>, o: { profileSaved
   const male = p.sex === "male"
   const h = num(p.height) && p.height > 100 ? p.height : 165
   const hm = h / 100
-  const age = ageFrom(p.dob) ?? 30
+  const age = num(p.age) && p.age >= 10 && p.age <= 110 ? p.age : ageFrom(p.dob) ?? 30
   const pts = weightPoints(days)
   const tw = pts.length ? pts[pts.length - 1].t : null
   const w = num(o.weightOverride) ? o.weightOverride : o.profileSaved && tw != null ? tw : num(p.weight) ? p.weight : 70
@@ -130,7 +192,8 @@ export function metrics(p: Profile, days: Record<string, Day>, o: { profileSaved
   let mode: Profile["targetMode"] = p.targetMode || "formula"
   let base: number
   let modeNote = ""
-  if (mode === "custom" && num(p.customKcal) && p.customKcal >= 800) base = p.customKcal
+  if (mode === "daytype") base = targetsOf(p, p.defaultDayType || "rest").k
+  else if (mode === "custom" && num(p.customKcal) && p.customKcal >= 800) base = p.customKcal
   else if (mode === "adaptive" && ad.ok) base = (ad.tdee as number) - credit * (ad.avgEx || 0) + delta
   else {
     if (mode === "adaptive") modeNote = "Not enough data for the adaptive target yet, so the formula target is used. The Weight tab shows your progress."
@@ -139,7 +202,7 @@ export function metrics(p: Profile, days: Record<string, Day>, o: { profileSaved
     base = tdee + delta
   }
   let clamped = false
-  if (mode !== "custom" && base < floor) {
+  if (mode !== "custom" && mode !== "daytype" && base < floor) {
     base = floor
     clamped = true
   }

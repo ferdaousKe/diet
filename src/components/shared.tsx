@@ -7,7 +7,12 @@ import { addDays, fmtDate, parseISO, today } from "@/lib/dates"
 import { quoteIndex, quoteList } from "@/lib/data"
 import type { LedgerState } from "@/lib/store"
 import type { Metrics } from "@/lib/calc"
-import type { Meal } from "@/lib/types"
+import type { DayType, Meal } from "@/lib/types"
+import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group"
+import { dayTypeOf, targetsOf } from "@/lib/calc"
+import { DAY_TYPES, dayTypeName } from "@/lib/data"
+import { setDayType } from "@/lib/store"
+import { toast } from "sonner"
 import { cn, fmt } from "@/lib/utils"
 
 export interface ViewProps {
@@ -180,5 +185,36 @@ export function Note({ tone = "info", children }: { tone?: "info" | "warn"; chil
       <i className={cn("mt-[7px] size-2 shrink-0 rounded-full", tone === "warn" ? "bg-warn" : "bg-primary")} />
       <span>{children}</span>
     </p>
+  )
+}
+
+/** Rest / gym / running selector for one date. Changing it only changes that day's targets: logged meals stay. */
+export function DayTypePicker({ date, s, compact }: { date: string; s: LedgerState; compact?: boolean }) {
+  const day = s.days[date]
+  const dt = dayTypeOf(day, s.profile)
+  const byType = s.profile.targetMode === "daytype"
+  return (
+    <div className={cn("flex flex-wrap items-center gap-x-3 gap-y-1.5", !compact && "rounded-2xl bg-secondary/70 px-4 py-3")}>
+      <span className="text-sm font-bold">Day type</span>
+      <ToggleGroup
+        type="single"
+        value={dt.type}
+        aria-label="Day type"
+        onValueChange={(v) => {
+          if (!v || (v === dt.type && dt.source === "chosen")) return
+          setDayType(date, v as DayType)
+          if (byType) {
+            const t = targetsOf(s.profile, v as DayType)
+            toast.success(`${dayTypeName(v as DayType)}: ${fmt(t.k)} kcal · P ${fmt(t.p)} · C ${fmt(t.c)} · F ${fmt(t.f)} g. Your meals are unchanged.`)
+          }
+        }}
+      >
+        {DAY_TYPES.map(([k, l]) => <ToggleGroupItem key={k} value={k}>{l}</ToggleGroupItem>)}
+      </ToggleGroup>
+      <span className="text-xs text-muted-foreground">
+        {dt.source === "workout" ? "Set from your logged workout. Pick one to confirm." : dt.source === "default" ? "Default. Pick the type of this day." : ""}
+        {!byType && " Day-type targets are off (Metabolism → Calorie target)."}
+      </span>
+    </div>
   )
 }

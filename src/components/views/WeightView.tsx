@@ -1,4 +1,4 @@
-import { useState } from "react"
+import { useMemo, useState } from "react"
 import { Pencil } from "lucide-react"
 import { toast } from "sonner"
 import { WeighInEditor } from "@/components/editors"
@@ -12,10 +12,13 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@
 import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group"
 import { Banners, ConfirmDelete, QuoteLine, StatTile, UnitInput, type ViewProps } from "@/components/shared"
 import { WeightChart } from "@/components/charts"
-import { weightPoints, type Metrics } from "@/lib/calc"
-import { addDays, daysBetween, fmtDate, today } from "@/lib/dates"
+import { planOf, trendRate, weightPoints, type Metrics } from "@/lib/calc"
+import { calorieCheck } from "@/lib/adjust"
+import { cycleContext, dayInfo } from "@/lib/cycle"
+import { CalorieCheckCard, CycleWeightCard, ProgressCard, RetentionNote } from "@/components/views/weight-extras"
+import { fmtDate, today } from "@/lib/dates"
 import { getState, patchProfile, setWeight, updateDay } from "@/lib/store"
-import { fmt, num, parseNum, signed, slope } from "@/lib/utils"
+import { fmt, num, parseNum, signed } from "@/lib/utils"
 
 export function WeightView({ s, M, go }: ViewProps) {
   const [wdate, setWdate] = useState(today())
@@ -26,9 +29,11 @@ export function WeightView({ s, M, go }: ViewProps) {
   const pts = weightPoints(s.days)
   const first = pts[0]
   const last = pts[pts.length - 1]
-  const since = addDays(today(), -20)
-  const recent = pts.filter((p) => p.date >= since).map((p) => [daysBetween(since, p.date), p.w] as [number, number])
-  const rate = recent.length >= 2 && recent[recent.length - 1][0] - recent[0][0] >= 5 ? slope(recent) * 7 : null
+  // Weekly pace from the smoothed trend over 3 weeks, not from single readings.
+  const rate = trendRate(pts, 21)
+  const cyc = useMemo(() => cycleContext(s.cycles, s.profile), [s.cycles, s.profile])
+  const check = useMemo(() => calorieCheck(s.days, s.profile, M, cyc), [s.days, s.profile, M, cyc])
+  const plan = planOf(s.profile)
   const toGoal = last && M.goalW ? last.t - M.goalW : null
 
   const log = () => {
@@ -59,9 +64,9 @@ export function WeightView({ s, M, go }: ViewProps) {
             <Button onClick={log}>Save weigh-in</Button>
             <p className="text-sm text-muted-foreground">Weigh yourself in the morning, after the bathroom and before eating. Swings of 0.5–1 kg from day to day are mostly water. Your calorie target follows the smoothed trend, not single readings.</p>
             <div className="grid grid-cols-2 gap-2.5">
-              <StatTile label="Trend weight" value={last ? fmt(last.t, 1) : "—"} sub={last ? `last reading ${fmt(last.w, 1)} kg` : "no data yet"} />
+              <StatTile label="Trend weight" value={last ? fmt(last.t, 1) : "—"} sub={last ? `7-day avg ${fmt(last.a7, 1)} · last ${fmt(last.w, 1)} kg` : "no data yet"} />
               <StatTile label="Since start" value={first && last ? signed(last.t - first.w) : "—"} sub={first ? `from ${fmt(first.w, 1)} kg on ${fmtDate(first.date)}` : "kg"} />
-              <StatTile label="Pace" value={rate != null ? signed(rate, 2) : "—"} sub={rate != null ? "kg / week, last 3 weeks" : "needs 2 weigh-ins over 5+ days"} />
+              <StatTile label="Pace" value={rate != null ? signed(rate, 2) : "—"} sub={rate != null ? "kg / week, smoothed trend, 3 weeks" : "needs 3 weigh-ins over 10+ days"} />
               <StatTile label="To goal" value={toGoal != null ? fmt(Math.abs(toGoal), 1) : "—"} sub={toGoal != null ? (M.eta ? `kg · about ${fmtDate(M.eta.date, "year")}` : "kg") : "set a goal weight"} />
             </div>
           </CardContent>
@@ -80,15 +85,31 @@ export function WeightView({ s, M, go }: ViewProps) {
             </CardAction>
           </CardHeader>
           <CardContent className="grid gap-3">
-            <WeightChart points={pts} range={Number(range)} goal={M.goalW} />
-            <div className="flex flex-wrap gap-4 text-xs text-muted-foreground">
+            <WeightChart points={pts} range={Number(range)} goal={M.goalW} cyc={cyc} showPhases={s.profile.showPhases} plan={plan} />
+            <div className="flex flex-wrap items-center gap-x-4 gap-y-1.5 text-xs text-muted-foreground">
               <span className="flex items-center gap-1.5"><i className="h-[3px] w-4 rounded-full bg-primary" />Trend</span>
+              <span className="flex items-center gap-1.5"><i className="h-0 w-4 border-t-2 border-dashed border-plum" />7-day average</span>
               <span className="flex items-center gap-1.5"><i className="size-2 rounded-full bg-muted-foreground/60" />Daily readings</span>
+              {plan && <span className="flex items-center gap-1.5"><i className="h-0 w-4 border-t-2 border-dotted border-foreground/50" />Plan</span>}
               {M.goalW != null && <span className="flex items-center gap-1.5"><i className="h-[3px] w-4 rounded-full bg-good" />Goal</span>}
+              {cyc.recorded.length > 0 && <span className="flex items-center gap-1.5"><i className="h-3 w-3 rounded-sm bg-period/25 ring-1 ring-period/40" />Period (recorded)</span>}
+              {cyc.recorded.length > 0 && (
+                <Button variant="outline" size="sm" className="ml-auto h-7 text-xs" onClick={() => patchProfile({ showPhases: !s.profile.showPhases })}>
+                  {s.profile.showPhases ? "Hide cycle phases" : "Show cycle phases"}
+                </Button>
+              )}
             </div>
+            {s.profile.showPhases && cyc.recorded.length > 0 && (
+              <p className="text-xs text-muted-foreground">Shaded: estimated follicular (green), ovulation (amber) and luteal (purple) phases. Estimates, not measurements.</p>
+            )}
           </CardContent>
         </Card>
       </div>
+
+      <RetentionNote cyc={cyc} pts={pts} />
+      <ProgressCard p={s.profile} pts={pts} go={go} />
+      <CalorieCheckCard check={check} p={s.profile} M={M} />
+      <CycleWeightCard cyc={cyc} pts={pts} go={go} />
 
       <AdaptiveCard M={M} using={s.profile.targetMode === "adaptive"} />
 
@@ -97,13 +118,14 @@ export function WeightView({ s, M, go }: ViewProps) {
         <CardContent>
           {pts.length ? (
             <Table>
-              <TableHeader><TableRow><TableHead>Date</TableHead><TableHead className="text-right">Weight kg</TableHead><TableHead className="text-right">Trend</TableHead><TableHead className="text-right">Change</TableHead><TableHead className="text-right">Waist cm</TableHead><TableHead><span className="sr-only">Delete</span></TableHead></TableRow></TableHeader>
+              <TableHeader><TableRow><TableHead>Date</TableHead><TableHead className="text-right">Weight kg</TableHead><TableHead className="text-right">Trend</TableHead><TableHead className="text-right">7-day avg</TableHead><TableHead className="text-right">Change</TableHead><TableHead className="text-right">Waist cm</TableHead><TableHead><span className="sr-only">Delete</span></TableHead></TableRow></TableHeader>
               <TableBody>
                 {[...pts].reverse().map((p, i, arr) => (
                   <TableRow key={p.date}>
-                    <TableCell>{fmtDate(p.date, "year")}</TableCell>
+                    <TableCell>{fmtDate(p.date, "year")}{dayInfo(cyc, p.date).recorded && <span className="ml-1.5 rounded bg-period/15 px-1 text-[10px] font-extrabold text-period" title="During a recorded period">P</span>}</TableCell>
                     <TableCell className="text-right font-bold">{fmt(p.w, 1)}</TableCell>
                     <TableCell className="text-right">{fmt(p.t, 1)}</TableCell>
+                    <TableCell className="text-right">{fmt(p.a7, 1)}</TableCell>
                     <TableCell className="text-right">{arr[i + 1] ? signed(p.w - arr[i + 1].w) : "—"}</TableCell>
                     <TableCell className="text-right">{p.waist != null ? fmt(p.waist, 1) : "—"}</TableCell>
                     <TableCell className="text-right whitespace-nowrap">

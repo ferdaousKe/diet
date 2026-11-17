@@ -116,7 +116,11 @@ export function ExerciseView({ s, M, date, setDate, go }: ViewProps) {
               )) : <p className="text-sm text-muted-foreground">Nothing logged for this day.</p>}
             </div>
             <p className="text-xs text-muted-foreground">
-              {M.credit ? `${Math.round(M.credit * 100)}% of workout calories are added to that day's food budget. MET estimates run high, so 50% is a safe default.` : "Workout calories are not added to your food budget."} Change it in Metabolism → Advanced settings.
+              {M.mode === "daytype"
+                ? "Day-type targets are on: gym and running days already include your training, so workout calories are not added on top. Pick the day type on Today or in the food diary."
+                : M.credit
+                ? `Your target covers your needs without sport. ${Math.round(M.credit * 100)}% of workout calories is added to this day's budget only${exKcal(day) ? ` (${fmt(exKcal(day))} burned → +${fmt(exKcal(day) * M.credit)} to eat)` : ""}; the rest adds to your deficit. Estimates run high, so 50% is a safe default.`
+                : "Your target covers your needs without sport. Workout calories are not added back, so they all add to your deficit."} Change it in Metabolism → Advanced settings.
             </p>
           </CardContent>
         </Card>

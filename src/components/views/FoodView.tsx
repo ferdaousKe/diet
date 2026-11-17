@@ -1,5 +1,5 @@
-import { useMemo, useState, type ReactNode } from "react"
-import { ChevronDown, Copy, Pencil, PlusCircle, Search, Trash2, X } from "lucide-react"
+import { useMemo, useRef, useState, type ReactNode } from "react"
+import { Camera, ChevronDown, Copy, Loader2, Pencil, PlusCircle, Search, Trash2, X } from "lucide-react"
 import { FoodEditor, FoodEntryEditor, type FoodEditTarget } from "@/components/editors"
 import type { FoodEntry } from "@/lib/types"
 import { toast } from "sonner"
@@ -10,11 +10,12 @@ import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/component
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
-import { Banners, ConfirmDelete, DateNav, QuoteLine, UnitInput, type ViewProps } from "@/components/shared"
+import { Banners, ConfirmDelete, DateNav, DayTypePicker, QuoteLine, UnitInput, type ViewProps } from "@/components/shared"
 import { BarsChart, dayNum } from "@/components/charts"
-import { blankDay, dayTotals, entryVals, exKcal, totalsOf } from "@/lib/calc"
-import { CATS, FOODS, MEALS, mealName } from "@/lib/data"
+import { blankDay, dayTarget, dayTotals, dayTypeOf, entryVals, totalsOf } from "@/lib/calc"
+import { CATS, FOODS, MEALS, WORKOUT_MEALS, mealName } from "@/lib/data"
 import { addDays, fmtDate, today } from "@/lib/dates"
+import { scanLabel } from "@/lib/label"
 import { deleteFood, updateDay } from "@/lib/store"
 import type { Food, Meal } from "@/lib/types"
 import { clone, cn, fmt, newId, norm, parseNum, round1 } from "@/lib/utils"
@@ -61,7 +62,7 @@ export function FoodView({ s, M, date, setDate, go, meal, setMeal }: ViewProps) 
       <Banners s={s} go={go} />
       <DateNav date={date} setDate={setDate} />
       <FoodEntryEditor target={editEntry ? { date, entry: editEntry } : null} onClose={() => setEditEntry(null)} />
-      <FoodEditor target={foodEdit} onClose={() => setFoodEdit(null)} onSaved={(f) => { setCat("mine"); setQ(""); choose(f) }} />
+      <FoodEditor target={foodEdit} onClose={() => { if (foodEdit?.photo) URL.revokeObjectURL(foodEdit.photo); setFoodEdit(null) }} onSaved={(f) => { setCat("mine"); setQ(""); choose(f) }} />
       <div className="grid items-start gap-5 lg:grid-cols-[minmax(0,1fr)_minmax(0,1.1fr)]">
         <Card>
           <CardHeader><CardTitle>Add food</CardTitle><CardDescription>Search {FOODS.length}+ foods or your own</CardDescription></CardHeader>
@@ -145,7 +146,10 @@ export function FoodView({ s, M, date, setDate, go, meal, setMeal }: ViewProps) 
             )}
             <p className="text-xs text-muted-foreground">Values are typical averages per 100 g. Check packaged labels for exact numbers.</p>
 
-            <Button variant="secondary" onClick={() => setFoodEdit({ mode: "new" })}><PlusCircle /> Create a food</Button>
+            <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
+              <Button variant="secondary" onClick={() => setFoodEdit({ mode: "new" })}><PlusCircle /> Create a food</Button>
+              <ScanLabelButton onRead={setFoodEdit} />
+            </div>
             <QuickAdd date={date} meal={meal} setMeal={setMeal} />
           </CardContent>
         </Card>
@@ -156,7 +160,8 @@ export function FoodView({ s, M, date, setDate, go, meal, setMeal }: ViewProps) 
             <CardAction><Badge variant="secondary">{fmtDate(date, "day")}</Badge></CardAction>
           </CardHeader>
           <CardContent className="grid gap-5">
-            {MEALS.map(([k, l]) => {
+            <DayTypePicker date={date} s={s} compact />
+            {MEALS.filter(([k]) => dayTypeOf(day, s.profile).type !== "rest" || !WORKOUT_MEALS.includes(k) || day.food.some((e) => e.meal === k)).map(([k, l]) => {
               const es = day.food.filter((e) => e.meal === k)
               return (
                 <div key={k} className="grid">
@@ -211,17 +216,17 @@ export function FoodView({ s, M, date, setDate, go, meal, setMeal }: ViewProps) 
         <CardHeader>
           <CardTitle>Last 14 days</CardTitle>
           <CardDescription className="flex flex-wrap gap-4">
-            <Legend color="var(--primary)" label="Within budget" /><Legend color="var(--bad)" label="Over budget" /><Legend color="var(--foreground)" label={`Target ${fmt(M.target)} kcal`} />
+            <Legend color="var(--primary)" label="Within budget" /><Legend color="var(--bad)" label="Over budget" />{M.mode === "daytype" ? <Legend color="var(--muted-foreground)" label="Compared with each day's own target (rest / gym / running)" /> : <Legend color="var(--foreground)" label={`Target ${fmt(M.target)} kcal`} />}
           </CardDescription>
         </CardHeader>
         <CardContent>
           <BarsChart
             unit="kcal"
-            refValue={M.target}
+            refValue={M.mode === "daytype" ? undefined : M.target}
             data={dates14.map((d) => {
               const dd = s.days[d]
               const v = dd ? Math.round(dayTotals(dd).k) : 0
-              const b = M.target + M.credit * (dd ? exKcal(dd) : 0)
+              const b = dayTarget(s.profile, M, dd).k
               return { label: dayNum(d), v, tone: v <= 0 ? "mute" : v > b * 1.05 ? "bad" : "acc" }
             })}
           />
@@ -229,6 +234,43 @@ export function FoodView({ s, M, date, setDate, go, meal, setMeal }: ViewProps) 
       </Card>
       <QuoteLine seed={date + "food"} mine={s.profile.myQuotes} />
     </div>
+  )
+}
+
+/** Takes or picks a photo of a nutrition label, reads it, and opens the food form pre-filled. */
+function ScanLabelButton({ onRead }: { onRead: (t: FoodEditTarget) => void }) {
+  const input = useRef<HTMLInputElement>(null)
+  const [busy, setBusy] = useState<number | null>(null)
+  const read = async (file: File) => {
+    setBusy(0)
+    const photo = URL.createObjectURL(file)
+    try {
+      const { values } = await scanLabel(file, (p) => setBusy(p))
+      const found = (["k", "p", "c", "f", "fb"] as const).filter((k) => values[k] != null).length
+      if (!found) toast("No nutrition values found. Try a sharper, straight photo of the table, or fill them in.")
+      else if (values.k == null) toast("Calories not found. Check the values before saving.")
+      onRead({ mode: "scan", prefill: values, photo })
+    } catch (err) {
+      URL.revokeObjectURL(photo)
+      console.error(err)
+      toast.error("Couldn't read the photo. Check your connection (the reader downloads on first use) and try again.")
+    } finally {
+      setBusy(null)
+    }
+  }
+  return (
+    <>
+      <input
+        ref={input}
+        type="file"
+        accept="image/*"
+        className="hidden"
+        onChange={(e) => { const f = e.target.files?.[0]; e.target.value = ""; if (f) read(f) }}
+      />
+      <Button variant="secondary" disabled={busy != null} onClick={() => input.current?.click()}>
+        {busy != null ? <><Loader2 className="animate-spin" /> Reading label… {Math.round(busy * 100)}%</> : <><Camera /> Scan a label</>}
+      </Button>
+    </>
   )
 }
 

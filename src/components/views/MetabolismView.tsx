@@ -10,11 +10,11 @@ import { Label } from "@/components/ui/label"
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table"
 import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group"
 import { Banners, Note, NumberField, SelectField, type ViewProps } from "@/components/shared"
-import { bfCat, bmiCat, macroTargets, metrics, weightPoints } from "@/lib/calc"
-import { ACTIVITY } from "@/lib/data"
-import { ageFrom, fmtDate, today } from "@/lib/dates"
+import { bfCat, bmiCat, macroTargets, metrics, targetsOf, weightPoints } from "@/lib/calc"
+import { ACTIVITY, DAY_TYPES, DEFAULT_DAY_TARGETS } from "@/lib/data"
+import { ageFrom, daysBetween, fmtDate, today } from "@/lib/dates"
 import { patchProfile, saveProfileFirst, setWeight } from "@/lib/store"
-import type { Profile } from "@/lib/types"
+import type { DayType, Nutr, Profile } from "@/lib/types"
 import { clamp, cn, fmt } from "@/lib/utils"
 
 export function MetabolismView({ s, go }: ViewProps) {
@@ -51,14 +51,14 @@ export function MetabolismView({ s, go }: ViewProps) {
   const saveFirst = () => {
     if (!(p.height && p.height >= 100 && p.height <= 250)) { toast("Enter your height in cm."); return }
     if (!(p.weight && p.weight >= 25 && p.weight <= 400)) { toast("Enter your current weight in kg."); return }
-    if (!ageFrom(p.dob)) { toast("Enter your date of birth."); return }
+    if (!(p.age && p.age >= 10 && p.age <= 110) && !ageFrom(p.dob)) { toast("Enter your age."); return }
     saveProfileFirst()
     if (lw == null) setWeight(today(), p.weight)
     toast.success(s.conn === "cloud" ? "Profile saved. Your journey starts now!" : "Profile saved in this browser.")
   }
-  const rates: [string, string][] = p.goal === "gain"
-    ? [["0.25", "0.25 kg/week · lean gain"], ["0.5", "0.5 kg/week"]]
-    : [["0.25", "0.25 kg/week · gentle"], ["0.5", "0.5 kg/week · steady"], ["0.75", "0.75 kg/week · fast"], ["1", "1 kg/week · aggressive"]]
+  // Pace needed to go from the reference weight to the goal by the goal date.
+  const neededRate = p.refWeight && p.goalWeight && p.refDate && p.goalDate && p.goalDate > p.refDate
+    ? Math.abs(p.refWeight - p.goalWeight) / (daysBetween(p.refDate, p.goalDate) / 7) : null
   const actRow = ACTIVITY.find((a) => a[0] === p.activity) || ACTIVITY[1]
 
   return (
@@ -74,10 +74,7 @@ export function MetabolismView({ s, go }: ViewProps) {
             {!saved && <Note tone="warn">These are example values. Replace them with yours, then press “Save my profile”.</Note>}
             {seg("sex", [["female", "Female"], ["male", "Male"]], "Sex")}
             <div className="grid grid-cols-2 gap-3">
-              <div className="grid min-w-0 gap-1.5">
-                <Label htmlFor="p-dob">Date of birth</Label>
-                <Input id="p-dob" type="date" max={today()} value={p.dob || ""} onChange={(e) => edit({ dob: e.target.value })} onBlur={(e) => commit({ dob: e.target.value })} />
-              </div>
+              <NumberField id="p-age" label="Age" unit="years" step="1" value={p.age} onChange={(v) => edit({ age: v })} onCommit={(v) => commit({ age: v != null && v >= 10 && v <= 110 ? Math.round(v) : null })} />
               <NumberField id="p-height" label="Height" unit="cm" step="0.5" value={p.height} onChange={(v) => edit({ height: v })} onCommit={(v) => commit({ height: v })} />
             </div>
             <div className="grid grid-cols-2 gap-3">
@@ -97,7 +94,7 @@ export function MetabolismView({ s, go }: ViewProps) {
               id="p-activity" label="Daily activity" value={String(p.activity)}
               options={ACTIVITY.map(([f, n]) => [String(f), n])}
               onChange={(v) => commit({ activity: Number(v) })}
-              hint={`${actRow[2]}. Count daily life only: the workouts you log are added on top.`}
+              hint={<>{actRow[2]}. <b>Daily life only, without sport.</b> Pick the level of a day with no workout: the workouts you log are counted separately{p.exCredit ? `, ${Math.round(p.exCredit * 100)}% added back on the day you do them` : ""}.</>}
             />
             <Fold title="Body measurements" hint="optional" defaultOpen={hasMeas}>
               <div className="grid grid-cols-3 gap-3">
@@ -111,9 +108,35 @@ export function MetabolismView({ s, go }: ViewProps) {
 
             <div className="border-t pt-4 font-display text-lg font-semibold">Plan</div>
             {seg("goal", [["lose", "Lose weight"], ["maintain", "Maintain"], ["gain", "Gain"]], "Goal")}
-            {p.goal !== "maintain" && <SelectField id="p-rate" label="Pace" value={String(p.rate)} options={rates} onChange={(v) => commit({ rate: Number(v) })} />}
-            {seg("targetMode", [["formula", "Formula"], ["adaptive", "Adaptive"], ["custom", "Custom"]], "Calorie target",
-              { formula: "BMR × activity, adjusted for your goal.", adaptive: "Learns your real burn from your food log and weight trend.", custom: "Set your own number." }[p.targetMode])}
+            {p.goal !== "maintain" && (
+              <>
+                <div className="grid grid-cols-2 gap-3">
+                  <NumberField id="p-refw" label="Reference weight" unit="kg" step="0.1" value={p.refWeight} onChange={(v) => edit({ refWeight: v })} onCommit={(v) => commit({ refWeight: v != null && v >= 25 && v <= 400 ? v : null })} />
+                  <div className="grid min-w-0 gap-1.5">
+                    <Label htmlFor="p-refd">Reference date</Label>
+                    <Input id="p-refd" type="date" value={p.refDate || ""} onChange={(e) => edit({ refDate: e.target.value || null })} onBlur={(e) => commit({ refDate: e.target.value || null })} />
+                  </div>
+                </div>
+                <div className="grid grid-cols-2 gap-3">
+                  <NumberField
+                    id="p-rate" label="Pace" unit="kg/wk" step="0.01" value={p.rate}
+                    onChange={(v) => { if (v != null && v > 0 && v <= 1.5) edit({ rate: v }) }}
+                    onCommit={(v) => commit({ rate: v != null && v > 0 && v <= 1.5 ? Math.round(v * 100) / 100 : p.rate })}
+                  />
+                  <div className="grid min-w-0 gap-1.5">
+                    <Label htmlFor="p-goald">Target date</Label>
+                    <Input id="p-goald" type="date" value={p.goalDate || ""} onChange={(e) => edit({ goalDate: e.target.value || null })} onBlur={(e) => commit({ goalDate: e.target.value || null })} />
+                  </div>
+                </div>
+                <p className="-mt-1 text-xs text-muted-foreground">
+                  Your plan line on the Weight tab starts at the reference weight and date.
+                  {neededRate != null && <> Reaching {fmt(p.goalWeight, 1)} kg by {fmtDate(p.goalDate as string, "year")} needs about <b>{fmt(neededRate, 2)} kg/week</b>.</>}
+                </p>
+              </>
+            )}
+            {seg("targetMode", [["daytype", "By day type"], ["formula", "Formula"], ["adaptive", "Adaptive"], ["custom", "Custom"]], "Calorie target",
+              { daytype: "Fixed targets for rest, gym and running days. Pick the type of each day on Today.", formula: "BMR × daily activity, adjusted for your goal. Best to start with.", adaptive: "Learns your real burn from 2+ weeks of food log and weigh-ins. Most accurate once you log regularly.", custom: "Your own number, for example one given by a dietitian." }[p.targetMode])}
+            {p.targetMode === "daytype" && <DayTargetsEditor p={p} commit={commit} />}
             {p.targetMode === "custom" && <NumberField id="p-custom" label="Custom target" unit="kcal" step="10" value={p.customKcal} onChange={(v) => edit({ customKcal: v })} onCommit={(v) => commit({ customKcal: v })} />}
             <Fold title="Water & activity goals" defaultOpen={p.waterGoal != null || p.exGoal !== 150}>
               <div className="grid grid-cols-2 gap-3">
@@ -122,6 +145,11 @@ export function MetabolismView({ s, go }: ViewProps) {
               </div>
             </Fold>
             <Fold title="Advanced settings">
+              <div className="grid min-w-0 gap-1.5">
+                <Label htmlFor="p-dob">Date of birth</Label>
+                <Input id="p-dob" type="date" max={today()} value={p.dob || ""} onChange={(e) => edit({ dob: e.target.value })} onBlur={(e) => commit({ dob: e.target.value })} />
+                <p className="text-xs text-muted-foreground">Optional. Used for your age only when the age field is empty.</p>
+              </div>
               <SelectField id="p-bmr" label="BMR formula" value={p.bmrFormula} onChange={(v) => commit({ bmrFormula: v as Profile["bmrFormula"] })}
                 options={[["mifflin", "Mifflin-St Jeor (recommended)"], ["harris", "Harris-Benedict, revised"], ["katch", "Katch-McArdle (lean mass)"], ["cunningham", "Cunningham (athletes)"]]} />
               <SelectField id="p-protein" label="Protein" value={String(p.proteinPerKg)} onChange={(v) => commit({ proteinPerKg: Number(v) })}
@@ -129,7 +157,7 @@ export function MetabolismView({ s, go }: ViewProps) {
               <SelectField id="p-fat" label="Fat share" value={String(p.fatPct)} onChange={(v) => commit({ fatPct: Number(v) })}
                 options={[["20", "20% of calories"], ["25", "25%"], ["30", "30% · default"], ["35", "35%"]]} />
               <SelectField id="p-credit" label="Add workout calories to budget" value={String(p.exCredit)} onChange={(v) => commit({ exCredit: Number(v) })}
-                options={[["0", "Off"], ["0.5", "50% · recommended"], ["0.75", "75%"], ["1", "100%"]]} hint="MET estimates usually run high, so adding back half is safer." />
+                options={[["0", "Off"], ["0.5", "50% · recommended"], ["0.75", "75%"], ["1", "100%"]]} hint="Only on days you train, and only for that day. Your base target never includes sport. Workout calories are estimates that usually run high, so adding back half keeps your deficit safe." />
             </Fold>
             {saved ? (
               <p className="text-xs text-muted-foreground">{s.conn === "cloud" ? "Changes save automatically to your account." : "Changes save automatically in this browser."}</p>
@@ -137,7 +165,7 @@ export function MetabolismView({ s, go }: ViewProps) {
           </CardContent>
         </Card>
 
-        <Results M={M} saved={saved} usingTrend={saved && M.tw != null && wOverride == null} />
+        <Results M={M} p={p} saved={saved} usingTrend={saved && M.tw != null && wOverride == null} />
       </div>
     </div>
   )
@@ -165,18 +193,21 @@ function KV({ k, sub, children }: { k: ReactNode; sub?: ReactNode; children: Rea
   )
 }
 
-function Results({ M, saved, usingTrend }: { M: ReturnType<typeof metrics>; saved: boolean; usingTrend: boolean }) {
-  const mt = macroTargets(M.target, M)
+function Results({ M, p, saved, usingTrend }: { M: ReturnType<typeof metrics>; p: Profile; saved: boolean; usingTrend: boolean }) {
+  const mt = M.mode === "daytype" ? targetsOf(p, p.defaultDayType) : macroTargets(M.target, M)
   const kc = { p: mt.p * 4, c: mt.c * 4, f: mt.f * 9 }
   const tot = kc.p + kc.c + kc.f || 1
   const goalTxt = M.sign < 0 ? `to lose ${M.rate} kg/week` : M.sign > 0 ? `to gain ${M.rate} kg/week` : ""
   const deltaTxt = M.delta ? `${M.delta < 0 ? "−" : "+"} ${fmt(Math.abs(M.delta))} ${goalTxt}` : "(maintenance)"
   const floorTxt = M.clamped ? `, raised to the ${fmt(M.floor)} kcal floor` : ""
-  const calc = M.mode === "custom"
+  const calc = M.mode === "daytype"
+    ? `${DAY_TYPES.find((d) => d[0] === p.defaultDayType)?.[1]} target (your default). Gym day ${fmt(targetsOf(p, "gym").k)} · Running day ${fmt(targetsOf(p, "run").k)} kcal; pick each day's type on Today`
+    : M.mode === "custom"
     ? `Your own number. The formula would give ${fmt(Math.max(M.floor, M.tdee + M.delta))} kcal.`
     : M.mode === "adaptive"
       ? `Measured burn ${fmt(M.ad.tdee)}${M.credit && M.ad.avgEx ? ` − workout credit ${fmt(M.credit * M.ad.avgEx)}` : ""} ${deltaTxt}${floorTxt}`
       : `BMR ${fmt(M.BMR)} × activity ${M.act} = TDEE ${fmt(M.tdee)} ${deltaTxt}${floorTxt}`
+  const creditTxt = M.mode === "daytype" ? " Training is already counted in the gym and running targets, so workout calories are not added on top." : M.credit ? ` Workouts are not included: on training days, ${Math.round(M.credit * 100)}% of the calories you burn is added to that day's budget.` : " Workouts are not included and not added back."
   const [bc, bTone] = bmiCat(M.bmi)
   const [fc, fTone] = bfCat(M.bf, M.male)
   const whtrCat = M.whtr == null ? null : M.whtr < 0.5 ? (["Healthy", "good"] as const) : M.whtr < 0.6 ? (["Increased risk", "warn"] as const) : (["High risk", "bad"] as const)
@@ -185,15 +216,15 @@ function Results({ M, saved, usingTrend }: { M: ReturnType<typeof metrics>; save
     : M.whr <= 0.8 ? (["Low risk", "good"] as const) : M.whr <= 0.85 ? (["Moderate risk", "warn"] as const) : (["High risk", "bad"] as const)
   const bmiPos = clamp(((M.bmi - 15) / 25) * 100, 0, 100)
   const BMR_ROWS: [keyof typeof M.bmr, string, string][] = [
-    ["mifflin", "Mifflin-St Jeor", "Most accurate for most people"], ["harris", "Harris-Benedict (revised)", "Classic formula, runs a little high"],
-    ["katch", "Katch-McArdle", "Uses lean mass"], ["cunningham", "Cunningham", "Uses lean mass, suits athletes"],
+    ["mifflin", "Mifflin-St Jeor", "Weight, height, age, sex. Most accurate for most people"], ["harris", "Harris-Benedict (revised)", "Same inputs, older formula, often a little high"],
+    ["katch", "Katch-McArdle", "Lean mass. Best when your body fat % is known"], ["cunningham", "Cunningham", "Lean mass, higher result. For athletes"],
   ]
 
   return (
     <div className="grid min-w-0 gap-5">
       <Card className="overflow-hidden">
         <CardHeader>
-          <CardDescription className="text-[11px] font-extrabold tracking-[0.1em] uppercase">Daily calorie target · {{ formula: "Formula", adaptive: "Adaptive", custom: "Custom" }[M.mode]}</CardDescription>
+          <CardDescription className="text-[11px] font-extrabold tracking-[0.1em] uppercase">Daily calorie target · {{ daytype: "By day type", formula: "Formula", adaptive: "Adaptive", custom: "Custom" }[M.mode]}</CardDescription>
           {!saved && <CardAction><Badge variant="warn">Example</Badge></CardAction>}
         </CardHeader>
         <CardContent className="grid gap-4">
@@ -201,7 +232,7 @@ function Results({ M, saved, usingTrend }: { M: ReturnType<typeof metrics>; save
             <span className="font-display text-[clamp(48px,8vw,68px)] leading-none font-semibold text-primary tnum">{fmt(M.target)}</span>
             <span className="text-sm font-bold text-muted-foreground">kcal / day</span>
           </div>
-          <p className="text-sm text-muted-foreground tnum">{calc}</p>
+          <p className="text-sm text-muted-foreground tnum">{calc}.{creditTxt}</p>
           {M.modeNote && <Note>{M.modeNote}</Note>}
           {M.clamped && <Note tone="warn">Your target is held at {fmt(M.floor)} kcal, the usual minimum without medical supervision. A slower pace gives a target above this floor.</Note>}
           {M.rateHigh && <Note tone="warn">{M.rate} kg per week is more than 1% of your body weight. A slower pace protects muscle and is easier to keep up.</Note>}
@@ -252,6 +283,8 @@ function Results({ M, saved, usingTrend }: { M: ReturnType<typeof metrics>; save
           </Table>
         </CardContent>
       </Card>
+
+      <HowItWorks M={M} />
 
       <div className="grid items-start gap-5 md:grid-cols-2">
         <Card>
@@ -316,6 +349,97 @@ function Results({ M, saved, usingTrend }: { M: ReturnType<typeof metrics>; save
         </Card>
       </div>
       <p className="text-center text-xs text-muted-foreground">All values are estimates from population formulas. They are a starting point, not a medical assessment.</p>
+    </div>
+  )
+}
+
+const BMR_NAMES = { mifflin: "Mifflin-St Jeor", harris: "Harris-Benedict", katch: "Katch-McArdle", cunningham: "Cunningham" }
+
+/** Plain-language explanation of every step behind the target, with the person's own numbers. */
+function HowItWorks({ M }: { M: ReturnType<typeof metrics> }) {
+  const ex = 400
+  const pct = Math.round(M.credit * 100)
+  return (
+    <Card>
+      <CardHeader><CardTitle>How your target works</CardTitle><CardDescription>Four steps, from what your body burns at rest to what you can eat today.</CardDescription></CardHeader>
+      <CardContent className="grid gap-1">
+        <Explain title="1. BMR: calories burned at complete rest">
+          <p>Breathing, heart, brain, body temperature: about 60–70% of what you burn in a day. It can't be measured at home, so it is estimated with a formula. All four give similar results; they differ in what they use.</p>
+          <ul className="grid gap-1.5 pl-4 [&>li]:list-disc">
+            <li><b>Mifflin-St Jeor</b> (1990): weight, height, age and sex. The most accurate in studies, within about 10% for most people. Use it if unsure.</li>
+            <li><b>Harris-Benedict</b> (1919, revised 1984): same inputs, older data. Tends to give about 5% more, especially with extra weight.</li>
+            <li><b>Katch-McArdle</b>: uses only your lean mass (everything except fat). More precise if your body fat % is reliable (scan or tape measures). Yours: {fmt(M.bf, 1)}%, {M.bfMethod.toLowerCase()}.</li>
+            <li><b>Cunningham</b>: also lean mass, but gives a higher number. Made for athletes with a lot of muscle.</li>
+          </ul>
+          <p>Yours with {BMR_NAMES[M.bmrKey]}: <b className="tnum">{fmt(M.BMR)} kcal</b>.</p>
+        </Explain>
+        <Explain title="2. TDEE: your needs on a day without sport">
+          <p>BMR × a daily activity factor (work, walking, chores) gives your maintenance calories. <b>Pick the factor for a day without training</b>, even if you train often: sport is counted in step 4. Choosing “very active” because you go to the gym would count your workouts twice.</p>
+          <p>Yours: {fmt(M.BMR)} × {M.act} = <b className="tnum">{fmt(M.tdee)} kcal</b>.</p>
+        </Explain>
+        <Explain title="3. Goal: the deficit or surplus">
+          <p>1 kg of body fat holds about 7,700 kcal. Losing 0.5 kg a week means eating about 550 kcal a day under your needs (1 kg a week: 1,100). The target never goes below {fmt(M.floor)} kcal without medical supervision.</p>
+          <p>Yours: {fmt(M.tdee)} {M.delta ? `${M.delta < 0 ? "−" : "+"} ${fmt(Math.abs(M.delta))}` : "± 0"} = <b className="tnum">{fmt(M.target)} kcal</b> a day{M.mode !== "formula" ? ` (${M.mode} target in use, see below)` : ""}.</p>
+        </Explain>
+        <Explain title="4. Workouts: added only on the days you train">
+          <p>Sport is not part of your target. When you log a workout, {pct ? `${pct}% of its calories is` : "nothing is"} added to that day's budget only. Your deficit from step 3 stays the same; the burn you don't eat back is an extra deficit.</p>
+          <p>Why not 100%? Exercise calorie estimates (watches, MET tables) often run 20–50% high, and part of that burn would have happened anyway, since your BMR keeps running during the workout. Adding back half is a safe middle.</p>
+          {pct ? <p>Example: a {ex} kcal workout adds <b className="tnum">{fmt(ex * M.credit)} kcal</b>, so that day you can eat {fmt(M.target + ex * M.credit)} instead of {fmt(M.target)}. The other {fmt(ex * (1 - M.credit))} kcal deepen your deficit.</p> : null}
+        </Explain>
+        <Explain title="Formula, adaptive or custom target?">
+          <ul className="grid gap-1.5 pl-4 [&>li]:list-disc">
+            <li><b>Formula</b>: steps 1 to 3 above. A good estimate from day one, but real needs can differ by a few hundred kcal.</li>
+            <li><b>Adaptive</b>: compares what you ate with how your trend weight moved, to measure your real burn. Needs about 2 weeks of complete logs and regular weigh-ins; then it is the most accurate.</li>
+            <li><b>Custom</b>: a number you choose, for example from a dietitian. Workouts are still added back as in step 4.</li>
+          </ul>
+        </Explain>
+      </CardContent>
+    </Card>
+  )
+}
+
+function Explain({ title, children }: { title: string; children: ReactNode }) {
+  const [open, setOpen] = useState(false)
+  return (
+    <Collapsible open={open} onOpenChange={setOpen} className="border-b py-2.5 last:border-0">
+      <CollapsibleTrigger className="flex w-full cursor-pointer items-center justify-between gap-3 text-left font-semibold">
+        {title}<ChevronDown className={cn("size-4 shrink-0 transition-transform", open && "rotate-180")} />
+      </CollapsibleTrigger>
+      <CollapsibleContent className="grid gap-2 pt-2 text-sm leading-relaxed text-muted-foreground [&_b]:text-foreground">{children}</CollapsibleContent>
+    </Collapsible>
+  )
+}
+
+/** Editable calorie and macro targets for each day type. */
+function DayTargetsEditor({ p, commit }: { p: Profile; commit: (patch: Partial<Profile>) => void }) {
+  const cols: [keyof Nutr, string, string][] = [["k", "kcal", "10"], ["p", "Protein g", "1"], ["c", "Carbs g", "1"], ["f", "Fat g", "1"], ["fb", "Fibre g", "1"]]
+  const setVal = (t: DayType, k: keyof Nutr, v: number | null) => {
+    if (v == null || v < 0 || (k === "k" && v < 800)) { toast("Enter a value (calories: at least 800)."); return }
+    commit({ dayTargets: { ...p.dayTargets, [t]: { ...targetsOf(p, t), [k]: v } } })
+  }
+  const changed = DAY_TYPES.some(([t]) => JSON.stringify(targetsOf(p, t)) !== JSON.stringify(DEFAULT_DAY_TARGETS[t]))
+  return (
+    <div className="grid gap-3 rounded-2xl bg-secondary/50 p-3">
+      <div className="grid gap-2">
+        {DAY_TYPES.map(([t, l]) => {
+          const x = targetsOf(p, t)
+          const fromMacros = x.p * 4 + x.c * 4 + x.f * 9
+          return (
+            <div key={t} className="grid gap-1.5">
+              <b className="text-sm">{l}</b>
+              <div className="grid grid-cols-5 gap-1.5">
+                {cols.map(([k, lab, step]) => (
+                  <NumberField key={k} id={`dt-${t}-${k}`} label={lab} step={step} value={x[k]} className="[&_input]:h-8 [&_input]:px-2 [&_input]:text-sm [&_label]:text-[11px]" onCommit={(v) => setVal(t, k, v)} />
+                ))}
+              </div>
+              {Math.abs(fromMacros - x.k) > 60 && <p className="text-xs text-warn">Protein, carbs and fat add up to {fmt(fromMacros)} kcal, not {fmt(x.k)}.</p>}
+            </div>
+          )
+        })}
+      </div>
+      <SelectField id="p-defday" label="When no type is picked" value={p.defaultDayType} options={DAY_TYPES.map(([t, l]) => [t, l])}
+        onChange={(v) => commit({ defaultDayType: v as DayType })} hint="Days with a logged run or gym session use that type automatically." />
+      {changed && <Button variant="outline" size="sm" onClick={() => commit({ dayTargets: DEFAULT_DAY_TARGETS })}>Reset to 1,600 / 1,800 / 1,900 kcal</Button>}
     </div>
   )
 }

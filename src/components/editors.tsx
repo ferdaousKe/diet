@@ -197,14 +197,16 @@ function WeighInForm({ date, weight, waist, onDone }: { date: string; weight: nu
 }
 
 /* ---------------- Food (create, edit yours, or copy a built-in one) ---------------- */
-export type FoodEditTarget = { mode: "new" | "edit" | "copy"; food?: Food }
+/** `scan`: a new food pre-filled from a label photo (`prefill`), shown next to the `photo` to check. */
+export type FoodEditTarget = { mode: "new" | "edit" | "copy" | "scan"; food?: Food; prefill?: Partial<Food>; photo?: string }
 const CAT_OPTS = CATS.filter(([k]) => k !== "all" && k !== "mine").concat([["mine", "Other"]])
 export function FoodEditor({ target, onClose, onSaved }: { target: FoodEditTarget | null; onClose: () => void; onSaved?: (f: Food) => void }) {
-  return <Shell open={!!target} onClose={onClose}>{target && <FoodForm key={target.food?.id ?? "new"} {...target} onDone={onClose} onSaved={onSaved} />}</Shell>
+  return <Shell open={!!target} onClose={onClose}>{target && <FoodForm key={target.food?.id ?? target.photo ?? "new"} {...target} onDone={onClose} onSaved={onSaved} />}</Shell>
 }
-function FoodForm({ mode, food, onDone, onSaved }: FoodEditTarget & { onDone: () => void; onSaved?: (f: Food) => void }) {
+function FoodForm({ mode, food: given, prefill, photo, onDone, onSaved }: FoodEditTarget & { onDone: () => void; onSaved?: (f: Food) => void }) {
+  const food = given ?? prefill
   const [v, setV] = useState<Record<string, string>>({
-    name: food ? (mode === "copy" ? `${food.name} (mine)` : food.name) : "", cat: food?.cat && CAT_OPTS.some(([k]) => k === food.cat) ? food.cat : "mine",
+    name: food?.name ? (mode === "copy" ? `${food.name} (mine)` : food.name) : "", cat: food?.cat && CAT_OPTS.some(([k]) => k === food.cat) ? food.cat : "mine",
     k: str(food?.k), p: str(food?.p), c: str(food?.c), f: str(food?.f), fb: str(food?.fb), sg: str(food?.sg ?? 100), sl: food?.sl ?? "1 serving",
   })
   const set = (k: string, x: string) => setV((o) => ({ ...o, [k]: x }))
@@ -215,7 +217,7 @@ function FoodForm({ mode, food, onDone, onSaved }: FoodEditTarget & { onDone: ()
     if (k == null || k < 0 || k > 950) { toast("Enter calories per 100 g (0–950)."); return }
     const sg = parseNum(v.sg)
     const f: Food = {
-      id: mode === "edit" && food ? food.id : "u-" + newId(), name, cat: v.cat, k, p: pos(v.p), c: pos(v.c), f: pos(v.f), fb: pos(v.fb),
+      id: mode === "edit" && given ? given.id : "u-" + newId(), name, cat: v.cat, k, p: pos(v.p), c: pos(v.c), f: pos(v.f), fb: pos(v.fb),
       sg: sg && sg > 0 ? sg : 100, sl: v.sl.trim() || "1 serving",
     }
     saveFood(f)
@@ -223,14 +225,17 @@ function FoodForm({ mode, food, onDone, onSaved }: FoodEditTarget & { onDone: ()
     onSaved?.(f)
     onDone()
   }
-  const title = mode === "edit" ? "Edit my food" : mode === "copy" ? "Copy to my foods" : "Create a food"
-  const desc = mode === "copy" ? "Built-in values stay as they are. Your copy keeps the changes you make here." : "Nutrients per 100 g, as printed on most labels."
+  const title = mode === "edit" ? "Edit my food" : mode === "copy" ? "Copy to my foods" : mode === "scan" ? "Food from a label" : "Create a food"
+  const desc = mode === "copy" ? "Built-in values stay as they are. Your copy keeps the changes you make here."
+    : mode === "scan" ? "Values read from the photo, per 100 g. Check them against the label, add a name, then save."
+    : "Nutrients per 100 g, as printed on most labels."
   return (
     <>
       <DialogHeader><DialogTitle>{title}</DialogTitle><DialogDescription>{desc}</DialogDescription></DialogHeader>
       <div className="grid gap-4">
+        {photo && <img src={photo} alt="Photo of the nutrition label" className="max-h-56 w-full rounded-xl border bg-secondary/40 object-contain" />}
         <div className="grid grid-cols-1 gap-3 sm:grid-cols-[minmax(0,1.6fr)_minmax(0,1fr)]">
-          <Field id="fd-name" label="Name"><Input id="fd-name" maxLength={80} placeholder="e.g. Msemen, homemade" value={v.name} onChange={(e) => set("name", e.target.value)} /></Field>
+          <Field id="fd-name" label="Name"><Input id="fd-name" autoFocus={mode === "scan"} maxLength={80} placeholder="e.g. Msemen, homemade" value={v.name} onChange={(e) => set("name", e.target.value)} /></Field>
           <Field id="fd-cat" label="Category">
             <Select value={v.cat} onValueChange={(c) => set("cat", c)}>
               <SelectTrigger id="fd-cat"><SelectValue /></SelectTrigger>

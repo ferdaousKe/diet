@@ -2,12 +2,19 @@
  * Inside claude.ai the app uses the artifact `db` capability: each signed-in person gets a private
  * subtree at data/users/<id>/profile (+ /days/<date>, /foods/<id>).
  * Elsewhere it uses Firebase when configured, then falls back to this browser's localStorage.
+ *
+ * Firestore layout (users/<uid>/..., readable and writable by that signed-in account only; see firestore.rules):
+ *   users/<uid>                profile + settings (day-type targets, plan, cycle settings, confirmed calorie changes)
+ *   users/<uid>/days/<date>    food, workouts, water, weigh-in, waist, day type
+ *   users/<uid>/foods/<id>     your own foods
+ *   users/<uid>/cycles/<id>    recorded periods { id, start, end }: cloud only, never copied to localStorage
  */
 import { useSyncExternalStore } from "react"
-import type { Day, Food, Profile } from "./types"
-import { DEFAULT_PROFILE } from "./data"
+import type { Adjustment, Day, DayType, Food, Nutr, Period, Profile } from "./types"
+import { DEFAULT_DAY_TARGETS, DEFAULT_PROFILE, PROFILE_V2_UPDATE } from "./data"
 import { blankDay, isEmptyDay } from "./calc"
 import { clone, num, round1, stable } from "./utils"
+import { today } from "./dates"
 import { toast } from "sonner"
 import { getApps, initializeApp } from "firebase/app"
 import { getAuth, GoogleAuthProvider, onAuthStateChanged, signInWithPopup, signOut, type User } from "firebase/auth"
@@ -20,6 +27,8 @@ export interface LedgerState {
   profileSaved: boolean
   days: Record<string, Day>
   foods: Record<string, Food>
+  /** Recorded periods. Kept in memory and in the signed-in account only. */
+  cycles: Record<string, Period>
   conn: Conn
   sync: "idle" | "saving" | "error"
   me: Me | null
@@ -28,7 +37,7 @@ export interface LedgerState {
 }
 
 let S: LedgerState = {
-  profile: { ...DEFAULT_PROFILE }, profileSaved: false, days: {}, foods: {},
+  profile: { ...DEFAULT_PROFILE }, profileSaved: false, days: {}, foods: {}, cycles: {},
   conn: "connecting", sync: "idle", me: null, authProvider: null, loaded: false,
 }
 const subs = new Set<() => void>()
@@ -46,10 +55,31 @@ export function useLedger() {
 
 /* ---------- normalisers ---------- */
 const PROFILE_KEYS = Object.keys(DEFAULT_PROFILE) as (keyof Profile)[]
+const DAY_TYPE_KEYS: DayType[] = ["rest", "gym", "run"]
+const isDate = (v: unknown): v is string => typeof v === "string" && /^\d{4}-\d{2}-\d{2}$/.test(v)
 function normProfile(d: Record<string, unknown>): Profile {
   const p = { ...DEFAULT_PROFILE } as Record<string, unknown>
   for (const k of PROFILE_KEYS) if (d[k] !== undefined) p[k] = d[k]
+  // Nested day targets: keep every type and nutrient valid even if the stored document is partial.
+  const dt = (d.dayTargets || {}) as Record<string, Partial<Nutr>>
+  p.dayTargets = Object.fromEntries(DAY_TYPE_KEYS.map((t) => {
+    const def = DEFAULT_DAY_TARGETS[t]
+    const got = dt[t] || {}
+    return [t, { k: num(got.k) ? got.k : def.k, p: num(got.p) ? got.p : def.p, c: num(got.c) ? got.c : def.c, f: num(got.f) ? got.f : def.f, fb: num(got.fb) ? got.fb : def.fb }]
+  }))
+  if (!DAY_TYPE_KEYS.includes(p.defaultDayType as DayType)) p.defaultDayType = "rest"
+  if (!Array.isArray(p.adjustments)) p.adjustments = []
   return p as unknown as Profile
+}
+/** Profiles saved before version 2 get the November 2026 plan once. Returns whether it was applied. */
+function migrateProfile(d: Record<string, unknown>): { profile: Profile; migrated: boolean } {
+  const profile = normProfile(d)
+  if (num(d.v) && d.v >= 2) return { profile, migrated: false }
+  return { profile: { ...profile, ...clone(PROFILE_V2_UPDATE) } as Profile, migrated: true }
+}
+function normPeriod(d: Record<string, unknown>, id: string): Period | null {
+  if (!isDate(d.start)) return null
+  return { id, start: d.start, end: isDate(d.end) && d.end >= d.start ? d.end : null }
 }
 function normDay(d: Record<string, unknown>, id: string): Day {
   return {
@@ -59,6 +89,7 @@ function normDay(d: Record<string, unknown>, id: string): Day {
     water: num(d.water) ? d.water : 0,
     weight: num(d.weight) ? d.weight : null,
     waist: num(d.waist) ? d.waist : null,
+    ...(d.dayType === "rest" || d.dayType === "gym" || d.dayType === "run" ? { dayType: d.dayType as DayType } : {}),
   }
 }
 
@@ -105,8 +136,16 @@ export async function signInWithGoogle() {
   try {
     await signInWithPopup(firebaseAuth, new GoogleAuthProvider())
   } catch (error) {
-    if ((error as { code?: string })?.code !== "auth/popup-closed-by-user") {
-      toast.error("Google sign-in failed. Check your Firebase configuration and try again.")
+    const code = (error as { code?: string })?.code
+    if (code === "auth/popup-closed-by-user") return
+    if (code === "auth/unauthorized-domain") {
+      toast.error("Add ferdaouske.github.io to Firebase Authentication's authorized domains.")
+    } else if (code === "auth/operation-not-allowed") {
+      toast.error("Enable Google in Firebase Authentication sign-in providers.")
+    } else if (code === "auth/popup-blocked") {
+      toast.error("Allow pop-ups for this site, then try again.")
+    } else {
+      toast.error(`Google sign-in failed${code ? ` (${code})` : ". Check Firebase Authentication settings."}`)
     }
   }
 }
@@ -180,7 +219,9 @@ function loadDevice() {
     const d = JSON.parse(raw)
     const days: Record<string, Day> = {}
     for (const [id, v] of Object.entries(d.days || {})) days[id] = normDay(v as Record<string, unknown>, id)
-    set({ profile: normProfile(d.profile || {}), profileSaved: !!d.profileSaved, days, foods: d.foods || {} })
+    const { profile, migrated } = migrateProfile(d.profile || {})
+    set({ profile, profileSaved: !!d.profileSaved, days, foods: d.foods || {} })
+    if (migrated && d.profileSaved) saveDevice()
   } catch {
     /* nothing stored or storage blocked */
   }
@@ -221,6 +262,50 @@ export function saveProfileFirst() {
   set({ profileSaved: true })
   persistProfile()
 }
+export function setDayType(date: string, type: DayType | null) {
+  updateDay(date, (d) => {
+    if (type) d.dayType = type
+    else delete d.dayType
+  })
+}
+
+/* ---------- cycle records (signed-in account only) ---------- */
+function cyclesWritable() {
+  if (S.conn === "cloud" && base) return true
+  toast.error("Sign in to save cycle data. It is stored in your account only.")
+  return false
+}
+export function saveCycle(p: Period) {
+  if (!cyclesWritable()) return false
+  const clean: Period = { id: p.id, start: p.start, end: p.end && p.end >= p.start ? p.end : null }
+  set({ cycles: { ...S.cycles, [clean.id]: clean } })
+  saver.queue(base.collection("cycles").doc(clean.id), clone(clean))
+  return true
+}
+export function deleteCycle(id: string) {
+  if (!cyclesWritable()) return
+  const cycles = { ...S.cycles }
+  delete cycles[id]
+  set({ cycles })
+  saver.queue(base.collection("cycles").doc(id), null)
+}
+/** Removes every period record and the cycle settings from the account. */
+export function deleteAllCycleData() {
+  if (!cyclesWritable()) return
+  for (const id of Object.keys(S.cycles)) saver.queue(base.collection("cycles").doc(id), null)
+  set({ cycles: {} })
+  patchProfile({ cycleLength: null, periodLength: null, showPhases: false })
+}
+
+/** Applies a calorie change the person confirmed. Day-type targets: the change goes to carbohydrates. */
+export function applyCalorieAdjustment(delta: number, note: string, targets?: Profile["dayTargets"]) {
+  const entry: Adjustment = { date: today(), delta, note }
+  const adjustments = [...(S.profile.adjustments || []), entry].slice(-24)
+  if (S.profile.targetMode === "daytype" && targets) patchProfile({ dayTargets: targets, adjustments, adjSnoozeUntil: null })
+  else if (S.profile.targetMode === "custom" && num(S.profile.customKcal)) patchProfile({ customKcal: S.profile.customKcal + delta, adjustments, adjSnoozeUntil: null })
+  else patchProfile({ adjustments, adjSnoozeUntil: null })
+}
+
 export function saveFood(f: Food) {
   set({ foods: { ...S.foods, [f.id]: f } })
   if (S.conn === "cloud") saver.queue(base.collection("foods").doc(f.id), clone(f))
@@ -235,9 +320,9 @@ export function deleteFood(id: string) {
 }
 
 /* ---------- connection ---------- */
-const loadedFlags = { profile: false, days: false, foods: false }
+const loadedFlags = { profile: false, days: false, foods: false, cycles: false }
 function refreshLoaded() {
-  if (!S.loaded && loadedFlags.profile && loadedFlags.days && loadedFlags.foods) set({ loaded: true })
+  if (!S.loaded && loadedFlags.profile && loadedFlags.days && loadedFlags.foods && loadedFlags.cycles) set({ loaded: true })
 }
 function onSubErr(e: { code?: string }) {
   if (S.conn !== "cloud") return
@@ -250,8 +335,9 @@ function clearSessionData(conn: Conn, me: Me | null, authProvider: "google" | nu
   loadedFlags.profile = false
   loadedFlags.days = false
   loadedFlags.foods = false
+  loadedFlags.cycles = false
   set({
-    profile: { ...DEFAULT_PROFILE }, profileSaved: false, days: {}, foods: {},
+    profile: { ...DEFAULT_PROFILE }, profileSaved: false, days: {}, foods: {}, cycles: {},
     conn, sync: "idle", me, authProvider, loaded: false,
   })
 }
@@ -260,6 +346,8 @@ function useDeviceSession(me: Me | null = null) {
   cloudUnsubscribers.splice(0).forEach((unsubscribe) => unsubscribe())
   activeUid = null
   base = null
+  // Drop the previous account's data (including cycle records) from memory before loading this browser's.
+  clearSessionData("device", me, null)
   loadDevice()
   set({ conn: "device", me, authProvider: null, loaded: true })
 }
@@ -273,13 +361,18 @@ function attachCloud(userBase: Ref, me: Me, authProvider: "google" | null) {
   const currentBase = base
   const daysPath = currentBase.path + "/days"
   const foodsPath = currentBase.path + "/foods"
+  const cyclesPath = currentBase.path + "/cycles"
 
   cloudUnsubscribers.push(currentBase.onSnapshot((snap: Ref) => {
     if (activeUid !== me.id) return
     loadedFlags.profile = true
     if (!saver.busy(currentBase.path) && snap.exists) {
-      const next = normProfile(snap.data() || {})
+      const { profile: next, migrated } = migrateProfile(snap.data() || {})
       if (!S.profileSaved || stable(next) !== stable(S.profile)) set({ profile: next, profileSaved: true })
+      if (migrated) {
+        saver.queue(currentBase, clone(next))
+        toast.success("Profile updated: 163 cm, 70.5 kg reference, goal 64 kg by 28 Feb 2027, day-type targets on. Your history is unchanged.")
+      }
     }
     refreshLoaded()
   }, onSubErr))
@@ -327,6 +420,29 @@ function attachCloud(userBase: Ref, me: Me, authProvider: "google" | null) {
     }
     loadedFlags.foods = true
     if (changed) set({ foods })
+    refreshLoaded()
+  }, onSubErr))
+
+  cloudUnsubscribers.push(currentBase.collection("cycles").onSnapshot((snap: Ref) => {
+    if (activeUid !== me.id) return
+    let cycles = S.cycles
+    let changed = false
+    for (const ch of snap.docChanges()) {
+      const id = ch.doc.id as string
+      if (saver.busy(cyclesPath + "/" + id)) continue
+      const next = ch.type === "removed" ? null : normPeriod(ch.doc.data() || {}, id)
+      if (!next) {
+        if (cycles[id]) { if (!changed) cycles = { ...cycles }; delete cycles[id]; changed = true }
+        continue
+      }
+      if (!cycles[id] || stable(next) !== stable(cycles[id])) {
+        if (!changed) cycles = { ...cycles }
+        cycles[id] = next
+        changed = true
+      }
+    }
+    loadedFlags.cycles = true
+    if (changed) set({ cycles })
     refreshLoaded()
   }, onSubErr))
 }

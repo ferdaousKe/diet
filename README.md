@@ -31,18 +31,16 @@ VITE_FIREBASE_PROJECT_ID=your-project
 VITE_FIREBASE_APP_ID=...
 ```
 
-Les valeurs `VITE_*` sont intégrées au JavaScript livré au navigateur ; la sécurité des données repose sur les règles Firestore. Par exemple, ces règles limitent chaque compte à ses propres documents :
+Les valeurs `VITE_*` sont intégrées au JavaScript livré au navigateur ; la sécurité des données repose sur les règles Firestore. Le fichier [`firestore.rules`](firestore.rules) limite chaque compte à ses propres documents et vérifie la forme des données de cycle. À publier avec `firebase deploy --only firestore:rules`, ou à coller dans la console Firebase (Firestore → Règles).
 
-```text
-rules_version = '2';
-service cloud.firestore {
-  match /databases/{database}/documents {
-    match /users/{userId}/{document=**} {
-      allow read, write: if request.auth != null && request.auth.uid == userId;
-    }
-  }
-}
-```
+Organisation des données (`users/<uid>`) :
+
+| Chemin | Contenu |
+| --- | --- |
+| `users/<uid>` | profil et réglages : objectifs par type de journée, plan (poids de référence, date cible, rythme), réglages du cycle, ajustements caloriques confirmés |
+| `users/<uid>/days/<date>` | repas (dont pré- et post-entraînement), séances, eau, pesée, tour de taille, type de journée (`rest`, `gym`, `run`) |
+| `users/<uid>/foods/<id>` | aliments personnels |
+| `users/<uid>/cycles/<id>` | règles enregistrées `{ id, start, end }`, uniquement dans le compte connecté (jamais dans le `localStorage`) |
 
 Redémarre le serveur après avoir modifié `.env.local`. Pour GitHub Pages, les mêmes variables doivent être présentes dans l’environnement au moment du build (`npm run deploy`).
 
@@ -51,10 +49,12 @@ Redémarre le serveur après avoir modifié `.env.local`. Pour GitHub Pages, les
 ```
 src/
   components/ui/      composants shadcn (button, card, select, tabs, toggle-group, table…)
-  components/views/   Today, Food, Exercise, Weight, Metabolism
+  components/views/   Today, Food, Exercise, Weight, Cycle, Metabolism
   components/shared.tsx, charts.tsx
   lib/calc.ts         BMR, TDEE, IMC, masse grasse, macros, TDEE adaptatif
   lib/data.ts         aliments, activités (MET), citations
+  lib/cycle.ts        cycle : durées, prédictions, phases estimées, poids par cycle
+  lib/adjust.ts       bilan calorique sur 3–4 semaines (suggestions, jamais appliquées sans confirmation)
   lib/store.ts        stockage et synchronisation
   index.css           thème (couleurs claires et sombres)
 ```
